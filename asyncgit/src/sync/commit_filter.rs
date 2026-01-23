@@ -46,12 +46,13 @@ bitflags! {
 		const FILENAMES = 1 << 2;
 		///
 		const AUTHORS = 1 << 3;
+		///
+		const COMMIT_HASHES = 1 << 4;
 		//TODO:
-		// const COMMIT_HASHES = 1 << 3;
 		// ///
-		// const DATES = 1 << 4;
+		// const DATES = 1 << 5;
 		// ///
-		// const DIFFS = 1 << 5;
+		// const DIFFS = 1 << 6;
 	}
 }
 
@@ -215,10 +216,24 @@ pub fn filter_commit_by_search(
 				false
 			};
 
+			let commit_hash_match = filter
+				.options
+				.fields
+				.contains(SearchFields::COMMIT_HASHES)
+				.then(|| {
+					// Search in both short and full hash
+					let short_hash = commit_id.to_string();
+					let full_hash = commit.id().to_string();
+					filter.match_text(&short_hash)
+						|| filter.match_text(&full_hash)
+				})
+				.unwrap_or_default();
+
 			Ok(msg_summary_match
 				|| msg_body_match
 				|| file_match
-				|| authors_match)
+				|| authors_match
+				|| commit_hash_match)
 		},
 	))
 }

@@ -33,6 +33,7 @@ enum Selection {
 	MessageBodySearch,
 	FilenameSearch,
 	AuthorsSearch,
+	CommitHashSearch,
 }
 
 enum PopupMode {
@@ -69,8 +70,14 @@ impl LogSearchPopupPopup {
 			mode: PopupMode::Search,
 			key_config: env.key_config.clone(),
 			options: (
-				SearchFields::default(),
-				SearchOptions::default(),
+				// Enable all search fields by default including commit hash
+				SearchFields::MESSAGE_SUMMARY
+					| SearchFields::MESSAGE_BODY
+					| SearchFields::FILENAMES
+					| SearchFields::AUTHORS
+					| SearchFields::COMMIT_HASHES,
+				// Disable fuzzy search by default (use exact match)
+				SearchOptions::empty(),
 			),
 			theme: env.theme.clone(),
 			find_text,
@@ -194,6 +201,13 @@ impl LogSearchPopupPopup {
 				" "
 			};
 
+		let x_commit_hash =
+			if self.options.0.contains(SearchFields::COMMIT_HASHES) {
+				"X"
+			} else {
+				" "
+			};
+
 		let x_opt_fuzzy =
 			if self.options.1.contains(SearchOptions::FUZZY_SEARCH) {
 				"X"
@@ -264,6 +278,16 @@ impl LogSearchPopupPopup {
 					false,
 				),
 			)]),
+			Line::from(vec![Span::styled(
+				format!("[{x_commit_hash}] commit hash",),
+				self.theme.text(
+					matches!(
+						self.selection,
+						Selection::CommitHashSearch
+					),
+					false,
+				),
+			)]),
 		]
 	}
 
@@ -307,6 +331,13 @@ impl LogSearchPopupPopup {
 				self.options.0.toggle(SearchFields::AUTHORS);
 
 				if self.options.0.is_empty() {
+					self.options.0.set(SearchFields::COMMIT_HASHES, true);
+				}
+			}
+			Selection::CommitHashSearch => {
+				self.options.0.toggle(SearchFields::COMMIT_HASHES);
+
+				if self.options.0.is_empty() {
 					self.options
 						.0
 						.set(SearchFields::MESSAGE_SUMMARY, true);
@@ -319,7 +350,7 @@ impl LogSearchPopupPopup {
 		if arg {
 			//up
 			self.selection = match self.selection {
-				Selection::EnterText => Selection::AuthorsSearch,
+				Selection::EnterText => Selection::CommitHashSearch,
 				Selection::FuzzyOption => Selection::EnterText,
 				Selection::CaseOption => Selection::FuzzyOption,
 				Selection::SummarySearch => Selection::CaseOption,
@@ -330,6 +361,7 @@ impl LogSearchPopupPopup {
 					Selection::MessageBodySearch
 				}
 				Selection::AuthorsSearch => Selection::FilenameSearch,
+				Selection::CommitHashSearch => Selection::AuthorsSearch,
 			};
 		} else {
 			self.selection = match self.selection {
@@ -343,7 +375,8 @@ impl LogSearchPopupPopup {
 					Selection::FilenameSearch
 				}
 				Selection::FilenameSearch => Selection::AuthorsSearch,
-				Selection::AuthorsSearch => Selection::EnterText,
+				Selection::AuthorsSearch => Selection::CommitHashSearch,
+				Selection::CommitHashSearch => Selection::EnterText,
 			};
 		}
 
@@ -356,7 +389,7 @@ impl LogSearchPopupPopup {
 		f: &mut Frame,
 		area: Rect,
 	) -> Result<()> {
-		const SIZE: (u16, u16) = (60, 10);
+		const SIZE: (u16, u16) = (60, 11);
 		let area = ui::centered_rect_absolute(SIZE.0, SIZE.1, area);
 
 		f.render_widget(Clear, area);

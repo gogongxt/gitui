@@ -74,6 +74,9 @@ impl Component for ConfirmPopup {
 					self.hide();
 				} else if key_match(e, self.key_config.keys.enter) {
 					self.confirm();
+				} else if key_match(e, self.key_config.keys.copy) {
+					// Allow 'y' (copy key) to confirm as well
+					self.confirm();
 				}
 
 				return Ok(EventState::Consumed);
