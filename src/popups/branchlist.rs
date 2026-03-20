@@ -258,11 +258,15 @@ impl BranchListPopup {
 	fn move_event(&mut self, e: &KeyEvent) -> Result<EventState> {
 		if key_match(e, self.key_config.keys.exit_popup) {
 			self.hide();
-		} else if key_match(e, self.key_config.keys.move_down) {
+		} else if key_match(e, self.key_config.keys.move_down)
+			|| key_match(e, self.key_config.keys.popup_down)
+		{
 			return self
 				.move_selection(ScrollType::Up)
 				.map(Into::into);
-		} else if key_match(e, self.key_config.keys.move_up) {
+		} else if key_match(e, self.key_config.keys.move_up)
+			|| key_match(e, self.key_config.keys.popup_up)
+		{
 			return self
 				.move_selection(ScrollType::Down)
 				.map(Into::into);
@@ -282,10 +286,14 @@ impl BranchListPopup {
 			return self
 				.move_selection(ScrollType::End)
 				.map(Into::into);
-		} else if key_match(e, self.key_config.keys.tab_toggle) {
+		} else if key_match(e, self.key_config.keys.tab_toggle)
+			|| key_match(e, self.key_config.keys.move_right)
+			|| key_match(e, self.key_config.keys.move_left)
+		{
 			self.local = !self.local;
 			self.check_remotes();
 			self.update_branches()?;
+			return Ok(EventState::Consumed);
 		}
 		Ok(EventState::NotConsumed)
 	}
