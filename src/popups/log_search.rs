@@ -331,7 +331,9 @@ impl LogSearchPopupPopup {
 				self.options.0.toggle(SearchFields::AUTHORS);
 
 				if self.options.0.is_empty() {
-					self.options.0.set(SearchFields::COMMIT_HASHES, true);
+					self.options
+						.0
+						.set(SearchFields::COMMIT_HASHES, true);
 				}
 			}
 			Selection::CommitHashSearch => {
@@ -361,7 +363,9 @@ impl LogSearchPopupPopup {
 					Selection::MessageBodySearch
 				}
 				Selection::AuthorsSearch => Selection::FilenameSearch,
-				Selection::CommitHashSearch => Selection::AuthorsSearch,
+				Selection::CommitHashSearch => {
+					Selection::AuthorsSearch
+				}
 			};
 		} else {
 			self.selection = match self.selection {
@@ -375,7 +379,9 @@ impl LogSearchPopupPopup {
 					Selection::FilenameSearch
 				}
 				Selection::FilenameSearch => Selection::AuthorsSearch,
-				Selection::AuthorsSearch => Selection::CommitHashSearch,
+				Selection::AuthorsSearch => {
+					Selection::CommitHashSearch
+				}
 				Selection::CommitHashSearch => Selection::EnterText,
 			};
 		}

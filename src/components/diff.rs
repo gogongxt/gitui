@@ -6,7 +6,7 @@ use super::{
 use crate::{
 	app::Environment,
 	components::{CommandInfo, Component, EventState},
-	keys::{key_match, SharedKeyConfig},
+	keys::{key_match, GituiKeyEvent, SharedKeyConfig},
 	options::SharedOptions,
 	queue::{Action, InternalEvent, NeedsUpdate, Queue, ResetItem},
 	string_utils::tabs_to_spaces,
@@ -21,7 +21,7 @@ use asyncgit::{
 	DiffLine, DiffLineType, FileDiff,
 };
 use bytesize::ByteSize;
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::{
 	layout::Rect,
 	symbols,
@@ -863,6 +863,26 @@ impl Component for DiffComponent {
 				{
 					self.horizontal_scroll
 						.move_right(HorizontalScrollType::Left);
+					Ok(EventState::Consumed)
+				} else if key_match(
+					e,
+					self.key_config.keys.diff_line_start,
+				) || key_match(
+					e,
+					GituiKeyEvent::new(
+						KeyCode::Char('_'),
+						KeyModifiers::empty(),
+					),
+				) {
+					self.horizontal_scroll
+						.move_right(HorizontalScrollType::Home);
+					Ok(EventState::Consumed)
+				} else if key_match(
+					e,
+					self.key_config.keys.diff_line_end,
+				) {
+					self.horizontal_scroll
+						.move_right(HorizontalScrollType::End);
 					Ok(EventState::Consumed)
 				} else if key_match(
 					e,

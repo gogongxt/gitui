@@ -183,6 +183,8 @@ pub enum ScrollType {
 pub enum HorizontalScrollType {
 	Left,
 	Right,
+	Home,
+	End,
 }
 
 #[derive(Copy, Clone)]

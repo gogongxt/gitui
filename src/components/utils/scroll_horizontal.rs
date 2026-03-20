@@ -36,6 +36,8 @@ impl HorizontalScroll {
 		let new_scroll_right = match move_type {
 			HorizontalScrollType::Left => old.saturating_sub(1),
 			HorizontalScrollType::Right => old.saturating_add(1),
+			HorizontalScrollType::Home => 0,
+			HorizontalScrollType::End => max,
 		};
 
 		let new_scroll_right = new_scroll_right.clamp(0, max);
