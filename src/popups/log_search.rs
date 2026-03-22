@@ -171,6 +171,7 @@ impl LogSearchPopupPopup {
 		}
 	}
 
+	#[allow(clippy::too_many_lines)]
 	fn get_text_options(&self) -> Vec<Line<'_>> {
 		let x_summary =
 			if self.options.0.contains(SearchFields::MESSAGE_SUMMARY)

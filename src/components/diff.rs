@@ -823,6 +823,7 @@ impl DiffComponent {
 		self.options.borrow_mut().set_diff_mode(self.diff_mode);
 	}
 
+	#[allow(clippy::too_many_lines)]
 	fn get_side_by_side_lines(
 		&self,
 		height: u16,
@@ -899,34 +900,38 @@ impl DiffComponent {
 									right_content,
 									right_num,
 									right_type,
-								) = if let Some(next) = next_line {
-									if next.line_type
-										== DiffLineType::Add
-									{
-										i += 1;
-										(
-											tabs_to_spaces(
-												next.content
-													.as_ref()
-													.to_string(),
-											),
-											next.position.new_lineno,
-											DiffLineType::Add,
-										)
-									} else {
+								) = next_line.map_or_else(
+									|| {
 										(
 											String::new(),
 											None,
 											DiffLineType::None,
 										)
-									}
-								} else {
-									(
-										String::new(),
-										None,
-										DiffLineType::None,
-									)
-								};
+									},
+									|next| {
+										if next.line_type
+											== DiffLineType::Add
+										{
+											i += 1;
+											(
+												tabs_to_spaces(
+													next.content
+														.as_ref()
+														.to_string(),
+												),
+												next.position
+													.new_lineno,
+												DiffLineType::Add,
+											)
+										} else {
+											(
+												String::new(),
+												None,
+												DiffLineType::None,
+											)
+										}
+									},
+								);
 
 								result.push(SideBySideLine {
 									left_content: tabs_to_spaces(
@@ -1038,6 +1043,8 @@ impl DiffComponent {
 		result
 	}
 
+	#[allow(clippy::too_many_lines)]
+	#[allow(clippy::unnecessary_wraps)]
 	fn draw_side_by_side(
 		&self,
 		f: &mut Frame,
@@ -1079,11 +1086,10 @@ impl DiffComponent {
 						.is_some_and(|h| h == line.hunk_idx);
 				let left_content =
 					trim_offset(&line.left_content, scrolled_right);
-				let line_num_str = line
-					.left_line_num
-					.map_or(String::from("   "), |n| {
-						format!("{n:4}")
-					});
+				let line_num_str = line.left_line_num.map_or_else(
+					|| String::from("   "),
+					|n| format!("{n:4}"),
+				);
 
 				// Get hunk marker style
 				let marker_style =
@@ -1098,7 +1104,7 @@ impl DiffComponent {
 
 				// Pad content to fill width when selected
 				let content = if selected {
-					format!("{:w$}\n", left_content, w = panel_width)
+					format!("{left_content:panel_width$}\n")
 				} else {
 					format!("{left_content}\n")
 				};
@@ -1163,11 +1169,10 @@ impl DiffComponent {
 						.is_some_and(|h| h == line.hunk_idx);
 				let right_content =
 					trim_offset(&line.right_content, scrolled_right);
-				let line_num_str = line
-					.right_line_num
-					.map_or(String::from("   "), |n| {
-						format!("{n:4}")
-					});
+				let line_num_str = line.right_line_num.map_or_else(
+					|| String::from("   "),
+					|n| format!("{n:4}"),
+				);
 
 				// Get hunk marker style
 				let marker_style =
@@ -1182,7 +1187,7 @@ impl DiffComponent {
 
 				// Pad content to fill width when selected
 				let content = if selected {
-					format!("{:w$}\n", right_content, w = panel_width)
+					format!("{right_content:panel_width$}\n")
 				} else {
 					format!("{right_content}\n")
 				};

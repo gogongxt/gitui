@@ -216,18 +216,19 @@ pub fn filter_commit_by_search(
 				false
 			};
 
-			let commit_hash_match = filter
+			let commit_hash_match = if filter
 				.options
 				.fields
 				.contains(SearchFields::COMMIT_HASHES)
-				.then(|| {
-					// Search in both short and full hash
-					let short_hash = commit_id.to_string();
-					let full_hash = commit.id().to_string();
-					filter.match_text(&short_hash)
-						|| filter.match_text(&full_hash)
-				})
-				.unwrap_or_default();
+			{
+				// Search in both short and full hash
+				let short_hash = commit_id.to_string();
+				let full_hash = commit.id().to_string();
+				filter.match_text(&short_hash)
+					|| filter.match_text(&full_hash)
+			} else {
+				false
+			};
 
 			Ok(msg_summary_match
 				|| msg_body_match

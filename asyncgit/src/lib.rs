@@ -56,6 +56,7 @@ mod progress;
 mod pull;
 mod push;
 mod push_tags;
+mod reflog;
 pub mod remote_progress;
 pub mod remote_tags;
 mod revlog;
@@ -76,6 +77,7 @@ pub use crate::{
 	pull::{AsyncPull, FetchRequest},
 	push::{AsyncPush, PushRequest},
 	push_tags::{AsyncPushTags, PushTagsRequest},
+	reflog::{AsyncReflog, FetchStatus as ReflogFetchStatus},
 	remote_progress::{RemoteProgress, RemoteProgressState},
 	revlog::{AsyncLog, FetchStatus},
 	status::{AsyncStatus, StatusParams},
@@ -128,6 +130,8 @@ pub enum AsyncGitNotification {
 	TreeFiles,
 	///
 	CommitFilter,
+	///
+	Reflog,
 }
 
 /// helper function to calculate the hash of an arbitrary type that implements the `Hash` trait

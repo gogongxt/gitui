@@ -7,18 +7,21 @@ ui:
 - [`FilesTab`]: See content of any file at HEAD. Blame
 - [`Stashing`]: Managing one stash
 - [`StashList`]: Managing all stashes
+- [`Reflog`]: Reflog history
 
 Many of the tabs can expand to show more details. This is done via
 Enter or right-arrow. To close again, press ESC.
 */
 
 mod files;
+mod reflog;
 mod revlog;
 mod stashing;
 mod stashlist;
 mod status;
 
 pub use files::FilesTab;
+pub use reflog::Reflog;
 pub use revlog::Revlog;
 pub use stashing::{Stashing, StashingOptions};
 pub use stashlist::StashList;

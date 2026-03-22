@@ -21,6 +21,7 @@ mod logwalker;
 mod merge;
 mod patches;
 mod rebase;
+mod reflog;
 pub mod remotes;
 mod repository;
 mod reset;
@@ -79,6 +80,7 @@ pub use merge::{
 	mergehead_ids, rebase_progress,
 };
 pub use rebase::rebase_branch;
+pub use reflog::{get_reflog, ReflogAction, ReflogEntry};
 pub use remotes::{
 	add_remote, delete_remote, get_default_remote,
 	get_default_remote_for_fetch, get_default_remote_for_push,

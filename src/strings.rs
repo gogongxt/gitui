@@ -91,6 +91,12 @@ pub fn tab_stashes(key_config: &SharedKeyConfig) -> String {
 		key_config.get_hint(key_config.keys.tab_stashes)
 	)
 }
+pub fn tab_reflog(key_config: &SharedKeyConfig) -> String {
+	format!(
+		"Reflog [{}]",
+		key_config.get_hint(key_config.keys.tab_reflog)
+	)
+}
 pub fn tab_divider(_key_config: &SharedKeyConfig) -> String {
 	" | ".to_string()
 }
@@ -327,6 +333,9 @@ pub fn tag_popup_annotation_msg() -> String {
 }
 pub fn stashlist_title(_key_config: &SharedKeyConfig) -> String {
 	"Stashes".to_string()
+}
+pub fn reflog_title(_key_config: &SharedKeyConfig) -> String {
+	"Reflog".to_string()
 }
 pub fn help_title(_key_config: &SharedKeyConfig) -> String {
 	"Help: all commands".to_string()
