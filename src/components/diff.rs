@@ -971,14 +971,8 @@ impl DiffComponent {
 								});
 							}
 							DiffLineType::Header => {
-								// Add leading space to align with text content below
-								let header_content = format!(
-									" {}",
-									tabs_to_spaces(
-										line.content
-											.as_ref()
-											.to_string()
-									)
+								let header_content = tabs_to_spaces(
+									line.content.as_ref().to_string(),
 								);
 								result.push(SideBySideLine {
 									left_content: header_content,
@@ -1081,7 +1075,7 @@ impl DiffComponent {
 					trim_offset(&line.left_content, scrolled_right);
 				let line_num_str = line
 					.left_line_num
-					.map_or(String::from("   "), |n| {
+					.map_or(String::from("    "), |n| {
 						format!("{n:4}")
 					});
 
@@ -1103,11 +1097,26 @@ impl DiffComponent {
 					format!("{left_content}\n")
 				};
 
-				// For Header lines, content starts with " @" where the leading space
-				// aligns with text below. Split it so the leading space is not highlighted.
-				if line.left_type == DiffLineType::Header
-					&& left_content.starts_with(' ')
-				{
+				// For lines where left side is empty (e.g., Add lines without Delete pair),
+				// still apply selection highlight to maintain visual consistency.
+				// Show line_break symbol (¶) for empty Add/Delete lines, same as unified mode.
+				if line.left_content.is_empty() {
+					// Show line_break symbol for empty Add/Delete lines
+					let display_content =
+						if line.left_type != DiffLineType::None {
+							self.theme.line_break()
+						} else {
+							String::new()
+						};
+					let content = if selected {
+						format!(
+							"{:w$}\n",
+							display_content,
+							w = panel_width
+						)
+					} else {
+						format!("{display_content}\n")
+					};
 					Line::from(vec![
 						Span::styled(Cow::from(marker), marker_style),
 						Span::styled(
@@ -1119,13 +1128,8 @@ impl DiffComponent {
 							Cow::from(" "),
 							self.theme.text(false, false),
 						),
-						// Leading space in header content - never highlighted
 						Span::styled(
-							Cow::from(" "),
-							self.theme.text(false, false),
-						),
-						Span::styled(
-							Cow::from(content[1..].to_string()),
+							Cow::from(content),
 							self.theme
 								.diff_line(line.left_type, selected),
 						),
@@ -1165,7 +1169,7 @@ impl DiffComponent {
 					trim_offset(&line.right_content, scrolled_right);
 				let line_num_str = line
 					.right_line_num
-					.map_or(String::from("   "), |n| {
+					.map_or(String::from("    "), |n| {
 						format!("{n:4}")
 					});
 
@@ -1187,8 +1191,30 @@ impl DiffComponent {
 					format!("{right_content}\n")
 				};
 
-				// For Header lines on right column (empty), don't highlight the filler
-				if line.right_type == DiffLineType::Header {
+				// For lines where right side is empty (Header or paired Delete),
+				// still apply selection highlight to maintain visual consistency.
+				// Show line_break symbol (¶) for empty Add/Delete lines, same as unified mode.
+				if line.right_type == DiffLineType::Header
+					|| line.right_content.is_empty()
+				{
+					// Show line_break symbol for empty Add/Delete lines (but not Header)
+					let display_content = if line.right_type
+						!= DiffLineType::None
+						&& line.right_type != DiffLineType::Header
+					{
+						self.theme.line_break()
+					} else {
+						String::new()
+					};
+					let filler = if selected {
+						format!(
+							"{:w$}\n",
+							display_content,
+							w = panel_width
+						)
+					} else {
+						format!("{display_content}\n")
+					};
 					Line::from(vec![
 						Span::styled(Cow::from(marker), marker_style),
 						Span::styled(
@@ -1200,10 +1226,10 @@ impl DiffComponent {
 							Cow::from(" "),
 							self.theme.text(false, false),
 						),
-						// Header right side is empty, don't highlight filler
 						Span::styled(
-							Cow::from(content),
-							self.theme.text(false, false),
+							Cow::from(filler),
+							self.theme
+								.diff_line(line.right_type, selected),
 						),
 					])
 				} else {
