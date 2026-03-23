@@ -349,18 +349,20 @@ impl DiffComponent {
 	}
 
 	fn max_scroll_right(&self) -> usize {
-		let available_width: usize = if self.diff_mode
-			== DiffMode::SideBySide
-		{
-			// In side-by-side mode, each panel's content width:
-			// chunks[0].width ≈ r.width / 2
-			// content width = chunks[0].width - 7 (border + marker + line_num + space)
-			// current_width = r.width - 2
-			// So: r.width / 2 - 7 ≈ current_width / 2 - 6
-			(self.current_size.get().0 / 2).saturating_sub(6).into()
-		} else {
-			self.current_size.get().0.into()
-		};
+		let available_width: usize =
+			if self.diff_mode == DiffMode::SideBySide {
+				// In side-by-side mode, each panel's content width:
+				// chunks[0].width ≈ r.width / 2
+				// content width = chunks[0].width - (border + marker + line_num_width + space)
+				// current_width = r.width - 2
+				// overhead = 2 (borders) + 1 (marker) + line_num_width + 1 (space)
+				let line_num_width = self.get_line_num_width() as u16;
+				(self.current_size.get().0 / 2)
+					.saturating_sub(2 + 1 + line_num_width + 1)
+					.into()
+			} else {
+				self.current_size.get().0.into()
+			};
 		self.longest_line.saturating_sub(available_width)
 	}
 
@@ -823,6 +825,30 @@ impl DiffComponent {
 		self.options.borrow_mut().set_diff_mode(self.diff_mode);
 	}
 
+	/// Calculate the line number width needed for side-by-side mode
+	fn get_line_num_width(&self) -> usize {
+		let Some(diff) = &self.diff else {
+			return 1;
+		};
+
+		let max_line_num = diff
+			.hunks
+			.iter()
+			.flat_map(|hunk| hunk.lines.iter())
+			.flat_map(|line| {
+				[line.position.old_lineno, line.position.new_lineno]
+			})
+			.flatten()
+			.max()
+			.unwrap_or(0);
+
+		if max_line_num == 0 {
+			1
+		} else {
+			(max_line_num.ilog10() + 1) as usize
+		}
+	}
+
 	#[allow(clippy::too_many_lines)]
 	fn get_side_by_side_lines(
 		&self,
@@ -1047,6 +1073,10 @@ impl DiffComponent {
 		height: u16,
 		hunk_indicator: &str,
 	) -> Result<()> {
+		// First, get lines to calculate line number width
+		let lines = self.get_side_by_side_lines(height);
+		let line_num_width = self.get_line_num_width();
+
 		// Split area into left and right columns
 		let chunks = Layout::default()
 			.direction(RatatuiDirection::Horizontal)
@@ -1060,10 +1090,11 @@ impl DiffComponent {
 			.split(r);
 
 		// Calculate available width for content (subtract borders, marker, line number, space)
-		// Each panel has: 1 border + 1 marker + 4 line num + 1 space = 7 chars overhead
-		let panel_width = chunks[0].width.saturating_sub(7) as usize;
-
-		let lines = self.get_side_by_side_lines(height);
+		// Each panel has: 1 border + 1 marker + line_num_width + 1 space chars overhead
+		let panel_width = chunks[0]
+			.width
+			.saturating_sub(2 + 1 + line_num_width as u16 + 1)
+			as usize;
 		let scrolled_right = self.horizontal_scroll.get_right();
 		let selected_hunk = self.selected_hunk;
 
@@ -1081,11 +1112,10 @@ impl DiffComponent {
 						.is_some_and(|h| h == line.hunk_idx);
 				let left_content =
 					trim_offset(&line.left_content, scrolled_right);
-				let line_num_str = line
-					.left_line_num
-					.map_or(String::from("    "), |n| {
-						format!("{n:4}")
-					});
+				let line_num_str = line.left_line_num.map_or_else(
+					|| " ".repeat(line_num_width),
+					|n| format!("{n:line_num_width$}"),
+				);
 
 				// Get hunk marker style
 				let marker_style =
@@ -1174,11 +1204,10 @@ impl DiffComponent {
 						.is_some_and(|h| h == line.hunk_idx);
 				let right_content =
 					trim_offset(&line.right_content, scrolled_right);
-				let line_num_str = line
-					.right_line_num
-					.map_or(String::from("    "), |n| {
-						format!("{n:4}")
-					});
+				let line_num_str = line.right_line_num.map_or_else(
+					|| " ".repeat(line_num_width),
+					|n| format!("{n:line_num_width$}"),
+				);
 
 				// Get hunk marker style
 				let marker_style =
@@ -1328,11 +1357,14 @@ impl DrawableComponent for DiffComponent {
 		);
 
 		// In side-by-side mode, each panel content width is smaller
-		// chunks[0].width ≈ r.width / 2, content = chunks[0].width - 7
-		// ≈ current_width / 2 - 6
+		// chunks[0].width ≈ r.width / 2, content = chunks[0].width - (2 + 1 + line_num_width + 1)
+		// ≈ current_width / 2 - (2 + 1 + line_num_width + 1)
 		let panel_content_width: usize =
 			if self.diff_mode == DiffMode::SideBySide {
-				(current_width / 2).saturating_sub(6).into()
+				let line_num_width = self.get_line_num_width() as u16;
+				(current_width / 2)
+					.saturating_sub(2 + 1 + line_num_width + 1)
+					.into()
 			} else {
 				current_width.into()
 			};
