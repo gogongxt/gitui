@@ -1045,6 +1045,7 @@ impl DiffComponent {
 		r: Rect,
 		title: &str,
 		height: u16,
+		hunk_indicator: &str,
 	) -> Result<()> {
 		// Split area into left and right columns
 		let chunks = Layout::default()
@@ -1264,7 +1265,7 @@ impl DiffComponent {
 			Paragraph::new(left_txt).block(
 				Block::default()
 					.title(Span::styled(
-						format!("{title} [Old]"),
+						format!("{title} [Old]{hunk_indicator}"),
 						self.theme.title(self.focused()),
 					))
 					.borders(Borders::ALL)
@@ -1278,7 +1279,7 @@ impl DiffComponent {
 			Paragraph::new(right_txt).block(
 				Block::default()
 					.title(Span::styled(
-						"[New]",
+						format!("[New]{hunk_indicator}"),
 						self.theme.title(self.focused()),
 					))
 					.borders(Borders::ALL)
@@ -1341,14 +1342,44 @@ impl DrawableComponent for DiffComponent {
 			panel_content_width,
 		);
 
+		let hunk_info = if let Some(diff) = &self.diff {
+			if !diff.hunks.is_empty() {
+				if let Some(selected) = self.selected_hunk {
+					format!(
+						" [{}/{}]",
+						selected + 1,
+						diff.hunks.len()
+					)
+				} else {
+					String::new()
+				}
+			} else {
+				String::new()
+			}
+		} else {
+			String::new()
+		};
+
+		// For side-by-side mode, hunk indicator will be added to [Old] and [New] titles
 		let title = format!(
-			"{}{}",
+			"{}{}{}",
 			strings::title_diff(&self.key_config),
-			self.current.path
+			self.current.path,
+			if self.diff_mode == DiffMode::SideBySide {
+				""
+			} else {
+				&hunk_info
+			}
 		);
 
 		if self.diff_mode == DiffMode::SideBySide && !self.pending {
-			self.draw_side_by_side(f, r, &title, current_height)?;
+			self.draw_side_by_side(
+				f,
+				r,
+				&title,
+				current_height,
+				&hunk_info,
+			)?;
 		} else {
 			let txt = if self.pending {
 				vec![Line::from(vec![Span::styled(
