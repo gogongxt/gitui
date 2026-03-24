@@ -105,14 +105,12 @@ impl ChangesComponent {
 					)?;
 				}
 
-				//TODO: this might be slow in big repos,
-				// in theory we should be able to ask the tree structure
-				// if we are currently on a leaf or a lonely branch that
-				// would mean that after staging the workdir becomes empty
-				if sync::is_workdir_clean(
-					&self.repo.borrow(),
-					self.options.borrow().status_show_untracked(),
-				)? {
+				// Check if this is the last file in the tree.
+				// file_count() tracks individual files (not tree nodes), so if a
+				// folder contains 3 files, file_count() returns 3, not 1.
+				// Using file_count() is much faster than is_workdir_clean()
+				// which would scan the entire working directory.
+				if self.files.file_count() == 1 {
 					self.queue
 						.push(InternalEvent::StatusLastFileMoved);
 				}
