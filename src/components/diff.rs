@@ -349,6 +349,7 @@ impl DiffComponent {
 	}
 
 	fn max_scroll_right(&self) -> usize {
+		let line_num_width = self.get_line_num_width() as u16;
 		let available_width: usize =
 			if self.diff_mode == DiffMode::SideBySide {
 				// In side-by-side mode, each panel's content width:
@@ -356,12 +357,18 @@ impl DiffComponent {
 				// content width = chunks[0].width - (border + marker + line_num_width + space)
 				// current_width = r.width - 2
 				// overhead = 2 (borders) + 1 (marker) + line_num_width + 1 (space)
-				let line_num_width = self.get_line_num_width() as u16;
 				(self.current_size.get().0 / 2)
 					.saturating_sub(2 + 1 + line_num_width + 1)
 					.into()
 			} else {
-				self.current_size.get().0.into()
+				// In unified mode, we have two line number columns
+				// overhead = 1 (marker) + line_num_width * 2 + 1 (space between line numbers) + 1 (space after line numbers)
+				let line_num_overhead = line_num_width * 2 + 3;
+				self.current_size
+					.get()
+					.0
+					.saturating_sub(line_num_overhead)
+					.into()
 			};
 		self.longest_line.saturating_sub(available_width)
 	}
@@ -480,6 +487,8 @@ impl DiffComponent {
 				let mut line_cursor = 0_usize;
 				let mut lines_added = 0_usize;
 
+				let line_num_width = self.get_line_num_width();
+
 				for (i, hunk) in diff.hunks.iter().enumerate() {
 					let hunk_selected = self.focused()
 						&& self.selected_hunk.is_some_and(|s| s == i);
@@ -512,6 +521,7 @@ impl DiffComponent {
 									&self.theme,
 									self.horizontal_scroll
 										.get_right(),
+									line_num_width,
 								));
 								lines_added += 1;
 							}
@@ -570,6 +580,7 @@ impl DiffComponent {
 		end_of_hunk: bool,
 		theme: &SharedTheme,
 		scrolled_right: usize,
+		line_num_width: usize,
 	) -> Line<'a> {
 		let style = theme.diff_hunk_marker(selected_hunk);
 
@@ -591,6 +602,21 @@ impl DiffComponent {
 			}
 		};
 
+		// Format line numbers in two columns (like GitHub)
+		let old_line_num = line.position.old_lineno;
+		let new_line_num = line.position.new_lineno;
+
+		let old_line_str = old_line_num.map_or_else(
+			|| " ".repeat(line_num_width),
+			|n| format!("{n:line_num_width$}"),
+		);
+		let new_line_str = new_line_num.map_or_else(
+			|| " ".repeat(line_num_width),
+			|n| format!("{n:line_num_width$}"),
+		);
+
+		let line_numbers = format!("{old_line_str} {new_line_str} ");
+
 		let content =
 			if !is_content_line && line.content.as_ref().is_empty() {
 				theme.line_break()
@@ -599,9 +625,14 @@ impl DiffComponent {
 			};
 		let content = trim_offset(&content, scrolled_right);
 
+		// Adjust width to account for line numbers
+		let line_num_overhead = line_num_width * 2 + 2; // Two line numbers + space separator
+		let content_width =
+			width.saturating_sub(line_num_overhead as u16) as usize;
+
 		let filled = if selected {
 			// selected line
-			format!("{content:w$}\n", w = width as usize)
+			format!("{content:w$}\n", w = content_width)
 		} else {
 			// weird eof missing eol line
 			format!("{content}\n")
@@ -609,6 +640,10 @@ impl DiffComponent {
 
 		Line::from(vec![
 			left_side_of_line,
+			Span::styled(
+				Cow::from(line_numbers),
+				theme.text(false, false),
+			),
 			Span::styled(
 				Cow::from(filled),
 				theme.diff_line(line.line_type, selected),
@@ -1356,9 +1391,11 @@ impl DrawableComponent for DiffComponent {
 			usize::from(current_height),
 		);
 
+		// Calculate content width for horizontal scroll
 		// In side-by-side mode, each panel content width is smaller
 		// chunks[0].width ≈ r.width / 2, content = chunks[0].width - (2 + 1 + line_num_width + 1)
 		// ≈ current_width / 2 - (2 + 1 + line_num_width + 1)
+		// In unified mode, we have two line number columns
 		let panel_content_width: usize =
 			if self.diff_mode == DiffMode::SideBySide {
 				let line_num_width = self.get_line_num_width() as u16;
@@ -1366,7 +1403,10 @@ impl DrawableComponent for DiffComponent {
 					.saturating_sub(2 + 1 + line_num_width + 1)
 					.into()
 			} else {
-				current_width.into()
+				// In unified mode with line numbers
+				let line_num_width = self.get_line_num_width() as u16;
+				let line_num_overhead = line_num_width * 2 + 3;
+				current_width.saturating_sub(line_num_overhead).into()
 			};
 
 		self.horizontal_scroll.update_no_selection(
@@ -1713,7 +1753,8 @@ mod tests {
 					false,
 					false,
 					&default_theme,
-					0
+					0,
+					1
 				)
 				.spans
 				.last()
@@ -1744,7 +1785,7 @@ mod tests {
 
 			assert_eq!(
 				DiffComponent::get_line_to_add(
-					4, &diff_line, false, false, false, &theme, 0
+					4, &diff_line, false, false, false, &theme, 0, 1
 				)
 				.spans
 				.last()
