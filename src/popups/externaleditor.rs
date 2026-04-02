@@ -8,7 +8,7 @@ use crate::{
 	strings,
 	ui::{self, style::SharedTheme},
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use asyncgit::sync::{
 	get_config_string, utils::repo_work_dir, RepoPath,
 };
@@ -24,8 +24,68 @@ use ratatui::{
 	Frame,
 };
 use scopeguard::defer;
-use std::ffi::OsStr;
 use std::{env, io, path::Path, process::Command};
+
+// Parse shell-style arguments, handling quoted strings
+fn parse_args(input: &str) -> Vec<String> {
+	let mut args = Vec::new();
+	let mut current = String::new();
+	let mut in_single_quote = false;
+	let mut in_double_quote = false;
+	let mut chars = input.chars().peekable();
+
+	while let Some(c) = chars.next() {
+		if in_single_quote {
+			if c == '\'' {
+				in_single_quote = false;
+			} else {
+				current.push(c);
+			}
+		} else if in_double_quote {
+			if c == '"' {
+				in_double_quote = false;
+			} else if c == '\\' {
+				// Handle escape in double quotes
+				if let Some(&next) = chars.peek() {
+					chars.next();
+					current.push(next);
+				}
+			} else {
+				current.push(c);
+			}
+		} else {
+			match c {
+				'\'' => {
+					in_single_quote = true;
+				}
+				'"' => {
+					in_double_quote = true;
+				}
+				'\\' => {
+					// Handle escape outside quotes
+					if let Some(&next) = chars.peek() {
+						chars.next();
+						current.push(next);
+					}
+				}
+				' ' | '\t' | '\n' | '\r' => {
+					if !current.is_empty() {
+						args.push(std::mem::take(&mut current));
+					}
+				}
+				_ => {
+					current.push(c);
+				}
+			}
+		}
+	}
+
+	if !current.is_empty() {
+		args.push(current);
+	}
+
+	args
+}
 
 ///
 pub struct ExternalEditorPopup {
@@ -66,7 +126,7 @@ impl ExternalEditorPopup {
 			io::stdout().execute(EnterAlternateScreen).expect("reset terminal");
 		}
 
-		let environment_options = ["GIT_EDITOR", "VISUAL", "EDITOR"];
+		let environment_options = ["GIT_EDITOR", "EDITOR"];
 
 		let editor = env::var(environment_options[0])
 			.ok()
@@ -74,46 +134,29 @@ impl ExternalEditorPopup {
 				get_config_string(repo, "core.editor").ok()?
 			})
 			.or_else(|| env::var(environment_options[1]).ok())
-			.or_else(|| env::var(environment_options[2]).ok())
 			.unwrap_or_else(|| String::from("vi"));
 
-		// TODO: proper handling arguments containing whitespaces
-		// This does not do the right thing if the input is `editor --something "with spaces"`
+		let all_args = parse_args(&editor);
 
-		// deal with "editor name with spaces" p1 p2 p3
-		// and with "editor_no_spaces" p1 p2 p3
-		// does not address spaces in pn
-		let mut echars = editor.chars().peekable();
-
-		let first_char = *echars.peek().ok_or_else(|| {
-			anyhow!(
+		let command = all_args.first().ok_or_else(|| {
+			anyhow::anyhow!(
 				"editor env variable found empty: {}",
 				environment_options.join(" or ")
 			)
 		})?;
-		let command: String = if first_char == '\"' {
-			echars
-				.by_ref()
-				.skip(1)
-				.take_while(|c| *c != '\"')
-				.collect()
-		} else {
-			echars.by_ref().take_while(|c| *c != ' ').collect()
-		};
 
-		let remainder_str = echars.collect::<String>();
-		let remainder = remainder_str.split_whitespace();
+		let args: Vec<&std::ffi::OsStr> = all_args
+			.iter()
+			.skip(1)
+			.map(|s| std::ffi::OsStr::new(s))
+			.chain(std::iter::once(path.as_os_str()))
+			.collect();
 
-		let mut args: Vec<&OsStr> =
-			remainder.map(OsStr::new).collect();
-
-		args.push(path.as_os_str());
-
-		Command::new(command.clone())
+		Command::new(command)
 			.current_dir(work_dir)
 			.args(args)
 			.status()
-			.map_err(|e| anyhow!("\"{command}\": {e}"))?;
+			.map_err(|e| anyhow::anyhow!("\"{command}\": {e}"))?;
 
 		Ok(())
 	}
