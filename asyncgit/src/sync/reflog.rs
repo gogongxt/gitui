@@ -91,7 +91,7 @@ impl ReflogAction {
 			Self::Rebase
 		} else if message_lower.starts_with("merge:") {
 			Self::Merge
-		} else if message_lower.starts_with("pull:") {
+		} else if message_lower.starts_with("pull") {
 			Self::Pull
 		} else if message_lower.starts_with("clone:") {
 			Self::Clone
