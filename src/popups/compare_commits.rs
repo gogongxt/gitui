@@ -40,10 +40,12 @@ pub struct CompareCommitsPopup {
 impl DrawableComponent for CompareCommitsPopup {
 	fn draw(&self, f: &mut Frame, rect: Rect) -> Result<()> {
 		if self.is_visible() {
+			let left_ratio =
+				self.options.borrow().detail_left_ratio();
 			let percentages = if self.diff.focused() {
 				(0, 100)
 			} else {
-				(50, 50)
+				(left_ratio, 100 - left_ratio)
 			};
 
 			let chunks = Layout::default()

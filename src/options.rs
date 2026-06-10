@@ -1,4 +1,4 @@
-use crate::components::DiffMode;
+use crate::{args::get_app_config_path, components::DiffMode};
 use anyhow::Result;
 use asyncgit::sync::{
 	diff::DiffOptions, repo_dir, RepoPathRef,
@@ -16,6 +16,14 @@ use std::{
 	path::PathBuf,
 	rc::Rc,
 };
+
+/// Global config options loaded from ~/.config/gitui/config.ron
+#[derive(Default, Clone, Serialize, Deserialize)]
+struct GlobalOptions {
+	pub status_left_ratio: Option<u16>,
+	pub log_left_ratio: Option<u16>,
+	pub detail_left_ratio: Option<u16>,
+}
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 struct OptionsData {
@@ -113,6 +121,30 @@ impl Options {
 		self.data.diff_mode
 	}
 
+	pub fn status_left_ratio(&self) -> u16 {
+		Self::read_global()
+			.ok()
+			.and_then(|g| g.status_left_ratio)
+			.map(|r| r.clamp(10, 90))
+			.unwrap_or(50)
+	}
+
+	pub fn log_left_ratio(&self) -> u16 {
+		Self::read_global()
+			.ok()
+			.and_then(|g| g.log_left_ratio)
+			.map(|r| r.clamp(10, 90))
+			.unwrap_or(60)
+	}
+
+	pub fn detail_left_ratio(&self) -> u16 {
+		Self::read_global()
+			.ok()
+			.and_then(|g| g.detail_left_ratio)
+			.map(|r| r.clamp(10, 90))
+			.unwrap_or(50)
+	}
+
 	pub fn set_diff_mode(&mut self, mode: DiffMode) {
 		self.data.diff_mode = mode;
 		self.save();
@@ -158,6 +190,14 @@ impl Options {
 		let dir = Self::options_file(repo)?;
 
 		let mut f = File::open(dir)?;
+		let mut buffer = Vec::new();
+		f.read_to_end(&mut buffer)?;
+		Ok(from_bytes(&buffer)?)
+	}
+
+	fn read_global() -> Result<GlobalOptions> {
+		let path = get_app_config_path()?.join("config.ron");
+		let mut f = File::open(path)?;
 		let mut buffer = Vec::new();
 		f.read_to_end(&mut buffer)?;
 		Ok(from_bytes(&buffer)?)

@@ -461,10 +461,12 @@ impl FileRevlogPopup {
 impl DrawableComponent for FileRevlogPopup {
 	fn draw(&self, f: &mut Frame, area: Rect) -> Result<()> {
 		if self.visible {
+			let left_ratio =
+				self.options.borrow().detail_left_ratio();
 			let percentages = if self.diff.focused() {
 				(0, 100)
 			} else {
-				(50, 50)
+				(left_ratio, 100 - left_ratio)
 			};
 
 			let chunks = Layout::default()

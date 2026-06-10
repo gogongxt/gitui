@@ -102,6 +102,9 @@ impl DrawableComponent for Status {
 			std::rc::Rc::new([rect])
 		};
 
+		let left_ratio = self.options.borrow().status_left_ratio();
+		let right_ratio = 100 - left_ratio;
+
 		let chunks = Layout::default()
 			.direction(Direction::Horizontal)
 			.constraints(
@@ -112,8 +115,8 @@ impl DrawableComponent for Status {
 					]
 				} else {
 					[
-						Constraint::Percentage(50),
-						Constraint::Percentage(50),
+						Constraint::Percentage(left_ratio),
+						Constraint::Percentage(right_ratio),
 					]
 				}
 				.as_ref(),

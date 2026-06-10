@@ -6,6 +6,7 @@ use crate::{
 		DrawableComponent, EventState,
 	},
 	keys::{key_match, SharedKeyConfig},
+	options::SharedOptions,
 	popups::{FileTreeOpen, InspectCommitOpen},
 	queue::{InternalEvent, Queue, StackablePopupOpen},
 	strings::{self, order},
@@ -74,6 +75,7 @@ pub struct Revlog {
 	key_config: SharedKeyConfig,
 	sender: Sender<AsyncGitNotification>,
 	theme: SharedTheme,
+	options: SharedOptions,
 }
 
 impl Revlog {
@@ -107,6 +109,7 @@ impl Revlog {
 			key_config: env.key_config.clone(),
 			sender: env.sender_git.clone(),
 			theme: env.theme.clone(),
+			options: env.options.clone(),
 		}
 	}
 
@@ -420,12 +423,15 @@ impl DrawableComponent for Revlog {
 			Rc::new([area])
 		};
 
+		let left_ratio = self.options.borrow().log_left_ratio();
+		let right_ratio = 100 - left_ratio;
+
 		let chunks = Layout::default()
 			.direction(Direction::Horizontal)
 			.constraints(
 				[
-					Constraint::Percentage(60),
-					Constraint::Percentage(40),
+					Constraint::Percentage(left_ratio),
+					Constraint::Percentage(right_ratio),
 				]
 				.as_ref(),
 			)

@@ -6,6 +6,7 @@ use crate::{
 		EventState, ScrollType,
 	},
 	keys::{key_match, SharedKeyConfig},
+	options::SharedOptions,
 	popups::InspectCommitOpen,
 	queue::{InternalEvent, Queue, StackablePopupOpen},
 	strings, try_or_popup,
@@ -75,6 +76,7 @@ pub struct Reflog {
 	visible: bool,
 	key_config: SharedKeyConfig,
 	theme: SharedTheme,
+	options: SharedOptions,
 }
 
 ///
@@ -97,6 +99,7 @@ impl Reflog {
 			visible: false,
 			key_config: env.key_config.clone(),
 			theme: env.theme.clone(),
+			options: env.options.clone(),
 		}
 	}
 
@@ -395,13 +398,16 @@ impl DrawableComponent for Reflog {
 	fn draw(&self, f: &mut Frame, area: Rect) -> Result<()> {
 		if self.visible {
 			if self.commit_details.is_visible() {
-				// Split layout: left for table, right for details
+				let left_ratio =
+					self.options.borrow().log_left_ratio();
+				let right_ratio = 100 - left_ratio;
+
 				let chunks = Layout::default()
 					.direction(Direction::Horizontal)
 					.constraints(
 						[
-							Constraint::Percentage(60),
-							Constraint::Percentage(40),
+							Constraint::Percentage(left_ratio),
+							Constraint::Percentage(right_ratio),
 						]
 						.as_ref(),
 					)

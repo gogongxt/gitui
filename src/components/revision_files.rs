@@ -6,6 +6,7 @@ use super::{
 use crate::{
 	app::Environment,
 	keys::{key_match, SharedKeyConfig},
+	options::SharedOptions,
 	popups::{BlameFileOpen, FileRevOpen},
 	queue::{InternalEvent, Queue, StackablePopupOpen},
 	strings::{self, order, symbol},
@@ -57,6 +58,7 @@ pub struct RevisionFilesComponent {
 	focus: Focus,
 	key_config: SharedKeyConfig,
 	select_file: Option<PathBuf>,
+	options: SharedOptions,
 }
 
 impl RevisionFilesComponent {
@@ -81,6 +83,7 @@ impl RevisionFilesComponent {
 			repo: env.repo.clone(),
 			select_file,
 			visible: false,
+			options: env.options.clone(),
 		}
 	}
 
@@ -397,12 +400,16 @@ impl RevisionFilesComponent {
 impl DrawableComponent for RevisionFilesComponent {
 	fn draw(&self, f: &mut Frame, area: Rect) -> Result<()> {
 		if self.is_visible() {
+			let left_ratio =
+				self.options.borrow().detail_left_ratio();
+			let right_ratio = 100 - left_ratio;
+
 			let chunks = Layout::default()
 				.direction(Direction::Horizontal)
 				.constraints(
 					[
-						Constraint::Percentage(40),
-						Constraint::Percentage(60),
+						Constraint::Percentage(left_ratio),
+						Constraint::Percentage(right_ratio),
 					]
 					.as_ref(),
 				)
