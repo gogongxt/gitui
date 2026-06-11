@@ -148,7 +148,7 @@ impl ExternalEditorPopup {
 		let args: Vec<&std::ffi::OsStr> = all_args
 			.iter()
 			.skip(1)
-			.map(|s| std::ffi::OsStr::new(s))
+			.map(std::ffi::OsStr::new)
 			.chain(std::iter::once(path.as_os_str()))
 			.collect();
 

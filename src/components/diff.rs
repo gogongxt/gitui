@@ -349,7 +349,8 @@ impl DiffComponent {
 	}
 
 	fn max_scroll_right(&self) -> usize {
-		let line_num_width = self.get_line_num_width() as u16;
+		let line_num_width: u16 =
+			self.get_line_num_width().try_into().unwrap_or(u16::MAX);
 		let available_width: usize =
 			if self.diff_mode == DiffMode::SideBySide {
 				// In side-by-side mode, each panel's content width:
@@ -572,6 +573,7 @@ impl DiffComponent {
 		])]
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	fn get_line_to_add<'a>(
 		width: u16,
 		line: &'a DiffLine,
@@ -626,13 +628,15 @@ impl DiffComponent {
 		let content = trim_offset(&content, scrolled_right);
 
 		// Adjust width to account for line numbers
-		let line_num_overhead = line_num_width * 2 + 2; // Two line numbers + space separator
-		let content_width =
-			width.saturating_sub(line_num_overhead as u16) as usize;
+		let line_num_overhead: u16 = (line_num_width * 2 + 2) // Two line numbers + space separator
+			.try_into()
+			.unwrap_or(u16::MAX);
+		let content_width: usize =
+			width.saturating_sub(line_num_overhead).into();
 
 		let filled = if selected {
 			// selected line
-			format!("{content:w$}\n", w = content_width)
+			format!("{content:content_width$}\n")
 		} else {
 			// weird eof missing eol line
 			format!("{content}\n")
@@ -1126,10 +1130,11 @@ impl DiffComponent {
 
 		// Calculate available width for content (subtract borders, marker, line number, space)
 		// Each panel has: 1 border + 1 marker + line_num_width + 1 space chars overhead
-		let panel_width = chunks[0]
-			.width
-			.saturating_sub(2 + 1 + line_num_width as u16 + 1)
-			as usize;
+		let panel_width = chunks[0].width.saturating_sub(
+			2 + 1
+				+ u16::try_from(line_num_width).unwrap_or(u16::MAX)
+				+ 1,
+		) as usize;
 		let scrolled_right = self.horizontal_scroll.get_right();
 		let selected_hunk = self.selected_hunk;
 
@@ -1165,7 +1170,7 @@ impl DiffComponent {
 
 				// Pad content to fill width when selected
 				let content = if selected {
-					format!("{:w$}\n", left_content, w = panel_width)
+					format!("{left_content:panel_width$}\n")
 				} else {
 					format!("{left_content}\n")
 				};
@@ -1176,17 +1181,13 @@ impl DiffComponent {
 				if line.left_content.is_empty() {
 					// Show line_break symbol for empty Add/Delete lines
 					let display_content =
-						if line.left_type != DiffLineType::None {
-							self.theme.line_break()
-						} else {
+						if line.left_type == DiffLineType::None {
 							String::new()
+						} else {
+							self.theme.line_break()
 						};
 					let content = if selected {
-						format!(
-							"{:w$}\n",
-							display_content,
-							w = panel_width
-						)
+						format!("{display_content:panel_width$}\n")
 					} else {
 						format!("{display_content}\n")
 					};
@@ -1257,7 +1258,7 @@ impl DiffComponent {
 
 				// Pad content to fill width when selected
 				let content = if selected {
-					format!("{:w$}\n", right_content, w = panel_width)
+					format!("{right_content:panel_width$}\n")
 				} else {
 					format!("{right_content}\n")
 				};
@@ -1278,11 +1279,7 @@ impl DiffComponent {
 						String::new()
 					};
 					let filler = if selected {
-						format!(
-							"{:w$}\n",
-							display_content,
-							w = panel_width
-						)
+						format!("{display_content:panel_width$}\n")
 					} else {
 						format!("{display_content}\n")
 					};
@@ -1396,15 +1393,15 @@ impl DrawableComponent for DiffComponent {
 		// chunks[0].width ≈ r.width / 2, content = chunks[0].width - (2 + 1 + line_num_width + 1)
 		// ≈ current_width / 2 - (2 + 1 + line_num_width + 1)
 		// In unified mode, we have two line number columns
+		let line_num_width: u16 =
+			self.get_line_num_width().try_into().unwrap_or(u16::MAX);
 		let panel_content_width: usize =
 			if self.diff_mode == DiffMode::SideBySide {
-				let line_num_width = self.get_line_num_width() as u16;
 				(current_width / 2)
 					.saturating_sub(2 + 1 + line_num_width + 1)
 					.into()
 			} else {
 				// In unified mode with line numbers
-				let line_num_width = self.get_line_num_width() as u16;
 				let line_num_overhead = line_num_width * 2 + 3;
 				current_width.saturating_sub(line_num_overhead).into()
 			};
@@ -1414,23 +1411,22 @@ impl DrawableComponent for DiffComponent {
 			panel_content_width,
 		);
 
-		let hunk_info = if let Some(diff) = &self.diff {
-			if !diff.hunks.is_empty() {
-				if let Some(selected) = self.selected_hunk {
-					format!(
-						" [{}/{}]",
-						selected + 1,
-						diff.hunks.len()
-					)
-				} else {
-					String::new()
+		let hunk_info =
+			self.diff.as_ref().map_or_else(String::new, |diff| {
+				if diff.hunks.is_empty() {
+					return String::new();
 				}
-			} else {
-				String::new()
-			}
-		} else {
-			String::new()
-		};
+				self.selected_hunk.map_or_else(
+					String::new,
+					|selected| {
+						format!(
+							" [{}/{}]",
+							selected + 1,
+							diff.hunks.len()
+						)
+					},
+				)
+			});
 
 		// For side-by-side mode, hunk indicator will be added to [Old] and [New] titles
 		let title = format!(

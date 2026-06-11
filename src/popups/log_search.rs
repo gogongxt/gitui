@@ -280,7 +280,7 @@ impl LogSearchPopupPopup {
 				),
 			)]),
 			Line::from(vec![Span::styled(
-				format!("[{x_commit_hash}] commit hash",),
+				format!("[{x_commit_hash}] commit hash"),
 				self.theme.text(
 					matches!(
 						self.selection,

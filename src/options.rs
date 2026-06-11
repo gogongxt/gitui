@@ -19,6 +19,7 @@ use std::{
 
 /// Global config options loaded from ~/.config/gitui/config.ron
 #[derive(Default, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct GlobalOptions {
 	pub status_left_ratio: Option<u16>,
 	pub log_left_ratio: Option<u16>,
@@ -121,28 +122,28 @@ impl Options {
 		self.data.diff_mode
 	}
 
+	#[allow(clippy::unused_self)]
 	pub fn status_left_ratio(&self) -> u16 {
 		Self::read_global()
 			.ok()
 			.and_then(|g| g.status_left_ratio)
-			.map(|r| r.clamp(10, 90))
-			.unwrap_or(50)
+			.map_or(50, |r| r.clamp(10, 90))
 	}
 
+	#[allow(clippy::unused_self)]
 	pub fn log_left_ratio(&self) -> u16 {
 		Self::read_global()
 			.ok()
 			.and_then(|g| g.log_left_ratio)
-			.map(|r| r.clamp(10, 90))
-			.unwrap_or(60)
+			.map_or(60, |r| r.clamp(10, 90))
 	}
 
+	#[allow(clippy::unused_self)]
 	pub fn detail_left_ratio(&self) -> u16 {
 		Self::read_global()
 			.ok()
 			.and_then(|g| g.detail_left_ratio)
-			.map(|r| r.clamp(10, 90))
-			.unwrap_or(50)
+			.map_or(50, |r| r.clamp(10, 90))
 	}
 
 	pub fn set_diff_mode(&mut self, mode: DiffMode) {
