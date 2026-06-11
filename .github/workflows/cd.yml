@@ -125,9 +125,10 @@ jobs:
 
       - name: Bump homebrew-core formula
         uses: mislav/bump-homebrew-formula-action@v3
-        if: "matrix.os == 'macos-latest' && !contains(github.ref, '-') && secrets.BREW_TOKEN != ''"
+        if: "matrix.os == 'macos-latest' && !contains(github.ref, '-') && env.HAS_BREW_TOKEN == 'true'"
         env:
           COMMITTER_TOKEN: ${{ secrets.BREW_TOKEN }}
+          HAS_BREW_TOKEN: ${{ secrets.BREW_TOKEN != '' }}
         with:
           formula-name: gitui
           # https://github.com/mislav/bump-homebrew-formula-action/issues/58
