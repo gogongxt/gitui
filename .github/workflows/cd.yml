@@ -125,7 +125,7 @@ jobs:
 
       - name: Bump homebrew-core formula
         uses: mislav/bump-homebrew-formula-action@v3
-        if: "matrix.os == 'macos-latest' && !contains(github.ref, '-')" # skip prereleases
+        if: "matrix.os == 'macos-latest' && !contains(github.ref, '-') && secrets.BREW_TOKEN != ''"
         env:
           COMMITTER_TOKEN: ${{ secrets.BREW_TOKEN }}
         with:
