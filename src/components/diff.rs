@@ -18,7 +18,7 @@ use anyhow::Result;
 use asyncgit::{
 	hash,
 	sync::{self, diff::DiffLinePosition, RepoPathRef},
-	DiffLine, DiffLineType, FileDiff,
+	DiffLine, DiffLineType, DiffType, FileDiff,
 };
 use bytesize::ByteSize;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
@@ -32,7 +32,13 @@ use ratatui::{
 	Frame,
 };
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, cell::Cell, cmp, path::Path};
+use std::{
+	borrow::Cow,
+	cell::{Cell, RefCell},
+	cmp,
+	collections::HashMap,
+	path::Path,
+};
 
 /// Diff display mode
 #[derive(
@@ -42,13 +48,26 @@ pub enum DiffMode {
 	#[default]
 	Unified,
 	SideBySide,
+	Delta,
+	DeltaSideBySide,
 }
 
-#[derive(Default)]
 struct Current {
 	path: String,
 	is_stage: bool,
 	hash: u64,
+	diff_type: DiffType,
+}
+
+impl Default for Current {
+	fn default() -> Self {
+		Self {
+			path: String::new(),
+			is_stage: false,
+			hash: 0,
+			diff_type: DiffType::WorkDir,
+		}
+	}
 }
 
 ///
@@ -136,7 +155,7 @@ struct SideBySideLine {
 pub struct DiffComponent {
 	repo: RepoPathRef,
 	diff: Option<FileDiff>,
-	longest_line: usize,
+	longest_line: Cell<usize>,
 	pending: bool,
 	selection: Selection,
 	selected_hunk: Option<usize>,
@@ -151,6 +170,10 @@ pub struct DiffComponent {
 	is_immutable: bool,
 	options: SharedOptions,
 	diff_mode: DiffMode,
+	delta_output: RefCell<Option<Vec<Line<'static>>>>,
+	delta_line_hunks: RefCell<Vec<usize>>,
+	delta_line_positions: RefCell<Vec<Option<DiffLinePosition>>>,
+	last_delta_width: Cell<u16>,
 }
 
 impl DiffComponent {
@@ -163,7 +186,7 @@ impl DiffComponent {
 			pending: false,
 			selected_hunk: None,
 			diff: None,
-			longest_line: 0,
+			longest_line: Cell::new(0),
 			current_size: Cell::new((0, 0)),
 			selection: Selection::Single(0),
 			vertical_scroll: VerticalScroll::new(),
@@ -174,10 +197,21 @@ impl DiffComponent {
 			repo: env.repo.clone(),
 			options: env.options.clone(),
 			diff_mode: env.options.borrow().diff_mode(),
+			delta_output: RefCell::new(None),
+			delta_line_hunks: RefCell::new(Vec::new()),
+			delta_line_positions: RefCell::new(Vec::new()),
+			last_delta_width: Cell::new(0),
 		}
 	}
 	///
 	fn can_scroll(&self) -> bool {
+		if self.is_delta_preview() {
+			return self
+				.delta_output
+				.borrow()
+				.as_ref()
+				.is_some_and(|l| l.len() > 1);
+		}
 		self.diff.as_ref().is_some_and(|diff| diff.lines > 1)
 	}
 	///
@@ -188,7 +222,10 @@ impl DiffComponent {
 	pub fn clear(&mut self, pending: bool) {
 		self.current = Current::default();
 		self.diff = None;
-		self.longest_line = 0;
+		*self.delta_output.borrow_mut() = None;
+		self.delta_line_hunks.borrow_mut().clear();
+		self.delta_line_positions.borrow_mut().clear();
+		self.longest_line.set(0);
 		self.vertical_scroll.reset();
 		self.horizontal_scroll.reset();
 		self.selection = Selection::Single(0);
@@ -201,6 +238,7 @@ impl DiffComponent {
 		path: String,
 		is_stage: bool,
 		diff: FileDiff,
+		diff_type: DiffType,
 	) {
 		self.pending = false;
 
@@ -213,30 +251,81 @@ impl DiffComponent {
 				path,
 				is_stage,
 				hash,
+				diff_type,
 			};
 
 			self.diff = Some(diff);
 
-			self.longest_line = self
-				.diff
-				.iter()
-				.flat_map(|diff| diff.hunks.iter())
-				.flat_map(|hunk| hunk.lines.iter())
-				.map(|line| {
-					let converted_content = tabs_to_spaces(
-						line.content.as_ref().to_string(),
-					);
+			self.longest_line.set(
+				self.diff
+					.iter()
+					.flat_map(|diff| diff.hunks.iter())
+					.flat_map(|hunk| hunk.lines.iter())
+					.map(|line| {
+						let converted_content = tabs_to_spaces(
+							line.content.as_ref().to_string(),
+						);
 
-					converted_content.len()
-				})
-				.max()
-				.map_or(0, |len| {
-					// Each hunk uses a 1-character wide vertical bar to its left to indicate
-					// selection.
-					len + 1
-				});
+						converted_content.len()
+					})
+					.max()
+					.map_or(0, |len| {
+						// Each hunk uses a 1-character wide vertical bar to its left to indicate
+						// selection.
+						len + 1
+					}),
+			);
 
-			if reset_selection {
+			if self.is_delta_preview() {
+				// In delta mode, preserve selection and rebuild delta maps after
+				if reset_selection {
+					self.vertical_scroll.reset();
+					self.selection = Selection::Single(0);
+				}
+				self.run_delta();
+				// Update longest_line from delta output for horizontal scrolling
+				self.longest_line.set(
+					self.delta_output.borrow().as_ref().map_or(
+						0,
+						|lines| {
+							lines
+								.iter()
+								.map(|line| {
+									line.spans
+										.iter()
+										.map(|s| {
+											s.content.chars().count()
+										})
+										.sum::<usize>()
+								})
+								.max()
+								.unwrap_or(0)
+						},
+					),
+				);
+				// Clamp selection to new delta line count
+				let max = self
+					.delta_output
+					.borrow()
+					.as_ref()
+					.map_or(0, |l| l.len().saturating_sub(1));
+				if let Selection::Single(line) = &self.selection {
+					if *line > max {
+						self.selection = Selection::Single(max);
+					}
+				}
+				// Update selected_hunk from delta hunk mapping
+				let idx = self.selection.get_end();
+				let hunk_map = self.delta_line_hunks.borrow();
+				let max_hunk = self
+					.diff
+					.as_ref()
+					.map_or(0, |d| d.hunks.len().saturating_sub(1));
+				self.selected_hunk = hunk_map
+					.get(idx)
+					.copied()
+					.map(|h| h.min(max_hunk));
+			} else if reset_selection {
 				self.vertical_scroll.reset();
 				self.selection = Selection::Single(0);
 				self.update_selection(0);
@@ -251,6 +340,55 @@ impl DiffComponent {
 	}
 
 	fn move_selection(&mut self, move_type: ScrollType) {
+		// In delta mode, scroll based on delta_output lines
+		if self.is_delta_preview() {
+			let max = self
+				.delta_output
+				.borrow()
+				.as_ref()
+				.map_or(0, |l| l.len().saturating_sub(1));
+			let new_start = match move_type {
+				ScrollType::Down => {
+					let next =
+						self.selection.get_bottom().saturating_add(1);
+					cmp::min(next, max)
+				}
+				ScrollType::Up => {
+					self.selection.get_top().saturating_sub(1)
+				}
+				ScrollType::Home => 0,
+				ScrollType::End => max,
+				ScrollType::PageDown => {
+					let next =
+						self.selection.get_bottom().saturating_add(
+							self.current_size
+								.get()
+								.1
+								.saturating_sub(1) as usize,
+						);
+					cmp::min(next, max)
+				}
+				ScrollType::PageUp => {
+					self.selection.get_top().saturating_sub(
+						self.current_size.get().1.saturating_sub(1)
+							as usize,
+					)
+				}
+			};
+			self.selection = Selection::Single(new_start);
+			// Update selected_hunk from delta hunk mapping
+			let hunk_map = self.delta_line_hunks.borrow();
+			let max_hunk = self
+				.diff
+				.as_ref()
+				.map_or(0, |d| d.hunks.len().saturating_sub(1));
+			self.selected_hunk = hunk_map
+				.get(new_start)
+				.copied()
+				.map(|h| h.min(max_hunk));
+			return;
+		}
+
 		if let Some(diff) = &self.diff {
 			// In side-by-side mode, display lines differ from diff.lines
 			// because Delete+Add pairs are shown as one line
@@ -313,6 +451,13 @@ impl DiffComponent {
 	}
 
 	fn lines_count(&self) -> usize {
+		if self.is_delta_preview() {
+			return self
+				.delta_output
+				.borrow()
+				.as_ref()
+				.map_or(0, Vec::len);
+		}
 		self.diff.as_ref().map_or(0, |diff| diff.lines)
 	}
 
@@ -361,6 +506,10 @@ impl DiffComponent {
 				(self.current_size.get().0 / 2)
 					.saturating_sub(2 + 1 + line_num_width + 1)
 					.into()
+			} else if self.is_delta_preview() {
+				// In delta mode, line numbers are already in delta output
+				// Only subtract borders
+				usize::from(self.current_size.get().0)
 			} else {
 				// In unified mode, we have two line number columns
 				// overhead = 1 (marker) + line_num_width * 2 + 1 (space between line numbers) + 1 (space after line numbers)
@@ -371,11 +520,11 @@ impl DiffComponent {
 					.saturating_sub(line_num_overhead)
 					.into()
 			};
-		self.longest_line.saturating_sub(available_width)
+		self.longest_line.get().saturating_sub(available_width)
 	}
 
 	fn modify_selection(&mut self, direction: Direction) {
-		if self.diff.is_some() {
+		if self.diff.is_some() || self.is_delta_preview() {
 			self.selection.modify(direction, self.lines_count());
 		}
 	}
@@ -679,14 +828,15 @@ impl DiffComponent {
 	fn unstage_hunk(&self) -> Result<()> {
 		if let Some(diff) = &self.diff {
 			if let Some(hunk) = self.selected_hunk {
-				let hash = diff.hunks[hunk].header_hash;
-				sync::unstage_hunk(
-					&self.repo.borrow(),
-					&self.current.path,
-					hash,
-					Some(self.options.borrow().diff_options()),
-				)?;
-				self.queue_update();
+				if let Some(hunk_data) = diff.hunks.get(hunk) {
+					sync::unstage_hunk(
+						&self.repo.borrow(),
+						&self.current.path,
+						hunk_data.header_hash,
+						Some(self.options.borrow().diff_options()),
+					)?;
+					self.queue_update();
+				}
 			}
 		}
 
@@ -701,12 +851,11 @@ impl DiffComponent {
 						&self.repo.borrow(),
 						Path::new(&self.current.path),
 					)?;
-				} else {
-					let hash = diff.hunks[hunk].header_hash;
+				} else if let Some(hunk_data) = diff.hunks.get(hunk) {
 					sync::stage_hunk(
 						&self.repo.borrow(),
 						&self.current.path,
-						hash,
+						hunk_data.header_hash,
 						Some(self.options.borrow().diff_options()),
 					)?;
 				}
@@ -769,6 +918,22 @@ impl DiffComponent {
 	}
 
 	fn selected_lines(&self) -> Vec<DiffLinePosition> {
+		if self.is_delta_preview() {
+			let positions = self.delta_line_positions.borrow();
+			let sel = self.selection.get_end();
+			let result: Vec<DiffLinePosition> = (0..positions.len())
+				.filter(|&i| self.selection.contains(i))
+				.filter_map(|i| positions[i])
+				.collect();
+			log::debug!(
+				"delta selected_lines: sel={}, positions_len={}, has_pos={}, result_len={}",
+				sel,
+				positions.len(),
+				positions.get(sel).is_some_and(Option::is_some),
+				result.len()
+			);
+			return result;
+		}
 		self.diff
 			.as_ref()
 			.map(|diff| {
@@ -839,29 +1004,468 @@ impl DiffComponent {
 			return;
 		}
 		if let Some(hunk_index) = hunk_index {
-			let line_index = diff
-				.hunks
-				.iter()
-				.take(hunk_index)
-				.fold(0, |sum, hunk| sum + hunk.lines.len());
-			let hunk = &diff.hunks[hunk_index];
-			self.selection = Selection::Single(line_index);
-			self.selected_hunk = Some(hunk_index);
-			self.vertical_scroll.move_area_to_visible(
-				self.current_size.get().1 as usize,
-				line_index,
-				line_index.saturating_add(hunk.lines.len()),
-			);
+			if self.is_delta_preview() {
+				// In delta mode, find the delta output line range for this hunk
+				let hunk_map = self.delta_line_hunks.borrow();
+				let delta_start = hunk_map
+					.iter()
+					.position(|&h| h == hunk_index)
+					.unwrap_or(0);
+				// Find end: next hunk's start or end of all lines
+				let delta_end = hunk_map
+					.iter()
+					.skip(delta_start)
+					.position(|&h| h > hunk_index)
+					.map_or(hunk_map.len(), |p| delta_start + p);
+				self.selection = Selection::Single(delta_start);
+				self.selected_hunk = Some(hunk_index);
+				self.vertical_scroll.move_area_to_visible(
+					self.current_size.get().1 as usize,
+					delta_start,
+					delta_end,
+				);
+			} else {
+				let line_index = diff
+					.hunks
+					.iter()
+					.take(hunk_index)
+					.fold(0, |sum, hunk| sum + hunk.lines.len());
+				let hunk = &diff.hunks[hunk_index];
+				self.selection = Selection::Single(line_index);
+				self.selected_hunk = Some(hunk_index);
+				self.vertical_scroll.move_area_to_visible(
+					self.current_size.get().1 as usize,
+					line_index,
+					line_index.saturating_add(hunk.lines.len()),
+				);
+			}
 		}
 	}
 
-	/// Toggle between unified and side-by-side diff mode
+	/// Returns `true` if current mode is any delta preview
+	const fn is_delta_preview(&self) -> bool {
+		match self.diff_mode {
+			DiffMode::Delta | DiffMode::DeltaSideBySide => true,
+			DiffMode::Unified | DiffMode::SideBySide => false,
+		}
+	}
+
+	/// Check if the `delta` binary is available on PATH
+	fn is_delta_available() -> bool {
+		std::process::Command::new("delta")
+			.arg("--version")
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.status()
+			.is_ok_and(|s| s.success())
+	}
+
+	/// Run `git diff | delta` and return parsed lines, or `None` on failure.
+	#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+	fn run_delta_subprocess(
+		repo: &RepoPathRef,
+		path: &str,
+		diff_type: &DiffType,
+		width: u16,
+		side_by_side: bool,
+	) -> Option<Vec<Line<'static>>> {
+		if path.is_empty() {
+			return None;
+		}
+
+		let repo_ref = repo.borrow();
+		let work_dir = repo_ref
+			.workdir()
+			.map(std::path::Path::to_path_buf)
+			.or_else(|| {
+				let output = std::process::Command::new("git")
+					.args(["rev-parse", "--show-toplevel"])
+					.current_dir(repo_ref.gitpath())
+					.output()
+					.ok()?;
+				if output.status.success() {
+					let path =
+						String::from_utf8_lossy(&output.stdout);
+					Some(std::path::PathBuf::from(path.trim()))
+				} else {
+					None
+				}
+			});
+		drop(repo_ref);
+
+		let work_dir = work_dir?;
+
+		let mut git_cmd = std::process::Command::new("git");
+		match diff_type {
+			DiffType::WorkDir => {
+				git_cmd.arg("diff");
+				git_cmd.arg(path);
+			}
+			DiffType::Stage => {
+				git_cmd.arg("diff");
+				git_cmd.arg("--cached");
+				git_cmd.arg(path);
+			}
+			DiffType::Commit(commit_id) => {
+				git_cmd.arg("diff");
+				// Use parent..commit to show changes IN the commit.
+				// For the first commit (no parent), fall back to empty tree.
+				let range = format!("{commit_id}^..{commit_id}");
+				git_cmd.arg(&range);
+				git_cmd.arg("--");
+				git_cmd.arg(path);
+			}
+			DiffType::Commits(ids) => {
+				git_cmd.arg("diff");
+				git_cmd.arg(ids.old.to_string());
+				git_cmd.arg(ids.new.to_string());
+				git_cmd.arg("--");
+				git_cmd.arg(path);
+			}
+		}
+
+		let mut git_output =
+			git_cmd.current_dir(&work_dir).output().ok()?;
+		if !git_output.status.success() {
+			// For commit diffs, the ^.. syntax fails on the first commit (no parent).
+			// Fall back to diffing against the empty tree.
+			if let DiffType::Commit(commit_id) = diff_type {
+				let empty_tree =
+					"4b825dc642cb6eb9a060e54bf899d15f3f9381b1";
+				let fallback = std::process::Command::new("git")
+					.args([
+						"diff",
+						empty_tree,
+						&commit_id.to_string(),
+						"--",
+						path,
+					])
+					.current_dir(&work_dir)
+					.output();
+				if let Ok(output) = fallback {
+					if output.status.success() {
+						git_output = output;
+					} else {
+						return None;
+					}
+				} else {
+					return None;
+				}
+			} else {
+				return None;
+			}
+		}
+
+		if git_output.stdout.is_empty() {
+			log::debug!(
+				"delta: git diff produced empty output for {diff_type:?} {path}"
+			);
+		}
+
+		// For untracked files, git diff produces empty output.
+		// Fall back to diffing against /dev/null to show the full file as added.
+		let git_output = if git_output.stdout.is_empty()
+			&& matches!(diff_type, DiffType::WorkDir)
+		{
+			let fallback = std::process::Command::new("git")
+				.args(["diff", "--no-index", "/dev/null", path])
+				.current_dir(&work_dir)
+				.output()
+				.ok()?;
+			if fallback.status.success()
+				|| fallback.status.code() == Some(1)
+			{
+				// diff --no-index exits 1 when files differ
+				fallback
+			} else {
+				git_output
+			}
+		} else {
+			git_output
+		};
+
+		if git_output.stdout.is_empty() {
+			log::debug!(
+				"delta: no diff content for {diff_type:?} {path}"
+			);
+			return None;
+		}
+
+		let width = width.max(20);
+		let mut delta_args = vec![
+			"--width".to_string(),
+			width.to_string(),
+			"--file-style".to_string(),
+			"omit".to_string(),
+			"--line-numbers".to_string(),
+		];
+		if side_by_side {
+			delta_args.push("--side-by-side".to_string());
+		}
+
+		let delta_bytes = if let Ok(mut child) =
+			std::process::Command::new("delta")
+				.args(&delta_args)
+				.current_dir(&work_dir)
+				.stdin(std::process::Stdio::piped())
+				.stdout(std::process::Stdio::piped())
+				.stderr(std::process::Stdio::null())
+				.spawn()
+		{
+			if let Some(stdin) = child.stdin.take() {
+				use std::io::Write;
+				let mut stdin = stdin;
+				let _ = stdin.write_all(&git_output.stdout);
+			}
+			child
+				.wait_with_output()
+				.ok()
+				.filter(|o| o.status.success())
+				.map(|o| o.stdout)
+		} else {
+			log::error!("delta: failed to spawn delta process");
+			None
+		};
+
+		if delta_bytes.is_none() {
+			log::error!("delta: delta process failed or produced no output for {diff_type:?} {path}");
+		}
+
+		delta_bytes.map(|bytes| {
+			let text = String::from_utf8_lossy(&bytes);
+			crate::ansi::ansi_to_lines(&text)
+		})
+	}
+
+	/// Run delta and store the result
+	fn run_delta(&self) {
+		let output = Self::run_delta_subprocess(
+			&self.repo,
+			&self.current.path,
+			&self.current.diff_type,
+			self.current_size.get().0,
+			self.diff_mode == DiffMode::DeltaSideBySide,
+		);
+		*self.delta_output.borrow_mut() = output;
+		self.rebuild_delta_maps();
+		self.last_delta_width.set(self.current_size.get().0);
+	}
+
+	/// Build mappings from delta display lines to hunk indices and diff line positions.
+	fn rebuild_delta_maps(&self) {
+		let mut hunk_map = Vec::new();
+		let mut pos_map: Vec<Option<DiffLinePosition>> = Vec::new();
+		let delta = self.delta_output.borrow();
+
+		// Build two lookups: one for old_lineno (delete lines), one for new_lineno (add/context lines)
+		// Delta non-side-by-side format: `old_lineno ⋮ new_lineno │ content`
+		// - Delete lines have old_lineno only (new_lineno is empty)
+		// - Add lines have new_lineno only (old_lineno is empty)
+		// - Context lines have both
+		let (old_lineno_lookup, new_lineno_lookup): (
+			HashMap<u32, DiffLinePosition>,
+			HashMap<u32, DiffLinePosition>,
+		) = self.diff.as_ref().map_or_else(
+			|| (HashMap::new(), HashMap::new()),
+			|diff| {
+				let mut old_map = HashMap::new();
+				let mut new_map = HashMap::new();
+				for hunk in &diff.hunks {
+					for line in &hunk.lines {
+						match line.line_type {
+							DiffLineType::Add => {
+								if let Some(n) =
+									line.position.new_lineno
+								{
+									new_map.insert(n, line.position);
+								}
+							}
+							DiffLineType::Delete => {
+								if let Some(n) =
+									line.position.old_lineno
+								{
+									old_map.insert(n, line.position);
+								}
+							}
+							_ => {
+								// Context lines: map both old and new
+								if let Some(n) =
+									line.position.old_lineno
+								{
+									old_map
+										.entry(n)
+										.or_insert(line.position);
+								}
+								if let Some(n) =
+									line.position.new_lineno
+								{
+									new_map
+										.entry(n)
+										.or_insert(line.position);
+								}
+							}
+						}
+					}
+				}
+				(old_map, new_map)
+			},
+		);
+
+		if let Some(lines) = delta.as_ref() {
+			let mut current_hunk: usize = 0;
+			let mut first_separator_seen = false;
+			for line in lines {
+				let text: String = line
+					.spans
+					.iter()
+					.map(|s| s.content.as_ref())
+					.collect();
+				let trimmed = text.trim();
+
+				// Hunk mapping
+				let is_top_separator = !trimmed.is_empty()
+					&& trimmed.ends_with('\u{2510}')
+					&& trimmed.chars().all(|c| {
+						c == '\u{2500}'
+							|| c == '\u{2510}' || c.is_whitespace()
+					});
+				if is_top_separator {
+					if first_separator_seen {
+						current_hunk += 1;
+					}
+					first_separator_seen = true;
+				}
+				hunk_map.push(current_hunk);
+
+				// Line position mapping: parse old and new line numbers from gutter spans
+				// Delta non-side-by-side format: `old_lineno ⋮ new_lineno │ content`
+				let (old_lineno, new_lineno) =
+					Self::parse_delta_line_numbers(line);
+				let pos = new_lineno.map_or_else(
+					|| {
+						old_lineno.and_then(|old_n| {
+							old_lineno_lookup.get(&old_n).copied()
+						})
+					},
+					|new_n| new_lineno_lookup.get(&new_n).copied(),
+				);
+				pos_map.push(pos);
+			}
+		}
+		let pos_count =
+			pos_map.iter().filter(|p| p.is_some()).count();
+		log::debug!(
+			"rebuild_delta_maps: {} lines, {} hunks, {} positions with line numbers",
+			hunk_map.len(),
+			hunk_map.iter().max().map_or(0, |h| h + 1),
+			pos_count
+		);
+		*self.delta_line_hunks.borrow_mut() = hunk_map;
+		*self.delta_line_positions.borrow_mut() = pos_map;
+	}
+
+	/// Parse old and new line numbers from delta gutter spans.
+	/// Delta non-side-by-side format: `old_lineno ⋮ new_lineno │ content`
+	/// Returns (`old_lineno`, `new_lineno`) — either may be `None` if empty.
+	fn parse_delta_line_numbers(
+		line: &Line<'_>,
+	) -> (Option<u32>, Option<u32>) {
+		let spans = &line.spans;
+		// Need at least: old_lineno, ⋮, new_lineno, │
+		if spans.len() < 4 {
+			return (None, None);
+		}
+		// First span: old line number (may be empty for add lines)
+		let old_num_text = spans[0].content.trim();
+		// Second span: ⋮ separator
+		let sep = spans[1].content.trim();
+		if sep != "\u{22ee}" {
+			return (None, None);
+		}
+		// Third span: new line number (may be empty for delete lines)
+		let new_num_text = spans[2].content.trim();
+
+		let old_lineno = if old_num_text.is_empty()
+			|| !old_num_text.chars().all(|c| c.is_ascii_digit())
+		{
+			None
+		} else {
+			old_num_text.parse().ok()
+		};
+		let new_lineno = if new_num_text.is_empty()
+			|| !new_num_text.chars().all(|c| c.is_ascii_digit())
+		{
+			None
+		} else {
+			new_num_text.parse().ok()
+		};
+
+		(old_lineno, new_lineno)
+	}
+	fn refresh_delta_if_width_changed(&self) {
+		if !self.is_delta_preview() {
+			return;
+		}
+		let current_width = self.current_size.get().0;
+		if current_width == self.last_delta_width.get()
+			|| current_width == 0
+			|| self.current.path.is_empty()
+		{
+			return;
+		}
+		let output = Self::run_delta_subprocess(
+			&self.repo,
+			&self.current.path,
+			&self.current.diff_type,
+			current_width,
+			self.diff_mode == DiffMode::DeltaSideBySide,
+		);
+		*self.delta_output.borrow_mut() = output;
+		self.rebuild_delta_maps();
+		self.last_delta_width.set(current_width);
+		// Update longest_line from new delta output
+		self.longest_line.set(
+			self.delta_output.borrow().as_ref().map_or(0, |lines| {
+				lines
+					.iter()
+					.map(|line| {
+						line.spans
+							.iter()
+							.map(|s| s.content.chars().count())
+							.sum::<usize>()
+					})
+					.max()
+					.unwrap_or(0)
+			}),
+		);
+	}
+
+	/// Cycle: `Unified` → `SideBySide` → `Delta` → `DeltaSideBySide` → `Unified`
 	pub fn toggle_diff_mode(&mut self) {
 		self.diff_mode = match self.diff_mode {
 			DiffMode::Unified => DiffMode::SideBySide,
-			DiffMode::SideBySide => DiffMode::Unified,
+			DiffMode::SideBySide => DiffMode::Delta,
+			DiffMode::Delta => DiffMode::DeltaSideBySide,
+			DiffMode::DeltaSideBySide => DiffMode::Unified,
 		};
+
+		if self.is_delta_preview() && !Self::is_delta_available() {
+			self.diff_mode = DiffMode::Unified;
+			self.queue.push(InternalEvent::ShowErrorMsg(
+				"delta not found. Install delta for enhanced diff preview."
+					.to_string(),
+			));
+		}
+
 		self.options.borrow_mut().set_diff_mode(self.diff_mode);
+
+		if self.is_delta_preview() {
+			self.run_delta();
+		} else {
+			*self.delta_output.borrow_mut() = None;
+			self.delta_line_hunks.borrow_mut().clear();
+			self.delta_line_positions.borrow_mut().clear();
+		}
 	}
 
 	/// Calculate the line number width needed for side-by-side mode
@@ -1100,6 +1704,152 @@ impl DiffComponent {
 		}
 
 		result
+	}
+
+	/// Trim a `Line` from the left by `offset` characters, preserving styles.
+	fn trim_line_offset(
+		line: Line<'static>,
+		offset: usize,
+	) -> Line<'static> {
+		if offset == 0 {
+			return line;
+		}
+		let mut remaining = offset;
+		let mut new_spans: Vec<Span<'static>> = Vec::new();
+		for span in line.spans {
+			let char_count = span.content.chars().count();
+			if remaining >= char_count {
+				// Skip this span entirely
+				remaining -= char_count;
+			} else {
+				// Partially or fully include this span
+				let trimmed: String =
+					span.content.chars().skip(remaining).collect();
+				remaining = 0;
+				if !trimmed.is_empty() {
+					new_spans.push(Span::styled(
+						Cow::Owned(trimmed),
+						span.style,
+					));
+				}
+			}
+		}
+		Line::from(new_spans)
+	}
+
+	/// Pad a line's last span with spaces if it has a background color,
+	/// so the background extends to the full panel width.
+	fn pad_line_bg(
+		mut line: Line<'static>,
+		width: usize,
+	) -> Line<'static> {
+		let content_width: usize = line
+			.spans
+			.iter()
+			.map(|s| s.content.chars().count())
+			.sum();
+		if content_width >= width {
+			return line;
+		}
+		// Check if the last span has a background color
+		if let Some(last) = line.spans.last() {
+			if last.style.bg.is_some() {
+				let pad = width - content_width;
+				// Append spaces to the last span
+				let mut new_content =
+					String::with_capacity(last.content.len() + pad);
+				new_content.push_str(&last.content);
+				for _ in 0..pad {
+					new_content.push(' ');
+				}
+				let idx = line.spans.len() - 1;
+				line.spans[idx] =
+					Span::styled(Cow::Owned(new_content), last.style);
+			}
+		}
+		line
+	}
+
+	fn draw_delta(
+		&self,
+		f: &mut Frame,
+		r: Rect,
+		title: &str,
+		height: u16,
+	) {
+		let delta = self.delta_output.borrow();
+		let panel_width = usize::from(self.current_size.get().0);
+		let scroll = self.vertical_scroll.get_top();
+		let scrolled_right = self.horizontal_scroll.get_right();
+		let cursor = self.selection.get_end().saturating_sub(scroll);
+		let sel_style = self.theme.text(true, true);
+		let txt: Vec<Line<'static>> = delta.as_ref().map_or_else(
+			|| {
+				vec![Line::from(vec![Span::styled(
+					Cow::from("No delta output available."),
+					self.theme.text(false, false),
+				)])]
+			},
+			|lines| {
+				lines
+					.iter()
+					.skip(scroll)
+					.take(usize::from(height))
+					.enumerate()
+					.map(|(i, line)| {
+						let mut line = Self::trim_line_offset(
+							line.clone(),
+							scrolled_right,
+						);
+						line = Self::pad_line_bg(line, panel_width);
+						if i == cursor {
+							for span in &mut line.spans {
+								span.style = sel_style;
+							}
+							// Pad to full width with selection style
+							let content_width: usize = line
+								.spans
+								.iter()
+								.map(|s| s.content.chars().count())
+								.sum();
+							if content_width < panel_width {
+								let padding = " ".repeat(
+									panel_width - content_width,
+								);
+								line.spans.push(Span::styled(
+									Cow::Owned(padding),
+									sel_style,
+								));
+							}
+						}
+						line
+					})
+					.collect()
+			},
+		);
+
+		f.render_widget(
+			Paragraph::new(txt).block(
+				Block::default()
+					.title(Span::styled(
+						title,
+						self.theme.title(self.focused()),
+					))
+					.borders(Borders::ALL)
+					.border_style(self.theme.block(self.focused())),
+			),
+			r,
+		);
+
+		if self.focused() {
+			self.vertical_scroll.draw(f, r, &self.theme);
+
+			if self.diff_mode != DiffMode::DeltaSideBySide
+				&& self.max_scroll_right() > 0
+			{
+				self.horizontal_scroll.draw(f, r, &self.theme);
+			}
+		}
 	}
 
 	#[allow(clippy::too_many_lines)]
@@ -1366,11 +2116,14 @@ impl DiffComponent {
 }
 
 impl DrawableComponent for DiffComponent {
+	#[allow(clippy::too_many_lines)]
 	fn draw(&self, f: &mut Frame, r: Rect) -> Result<()> {
 		self.current_size.set((
 			r.width.saturating_sub(2),
 			r.height.saturating_sub(2),
 		));
+
+		self.refresh_delta_if_width_changed();
 
 		let current_width = self.current_size.get().0;
 		let current_height = self.current_size.get().1;
@@ -1378,6 +2131,8 @@ impl DrawableComponent for DiffComponent {
 		// Use display line count for side-by-side mode
 		let lines_count = if self.diff_mode == DiffMode::SideBySide {
 			self.side_by_side_lines_count()
+		} else if self.is_delta_preview() {
+			self.delta_output.borrow().as_ref().map_or(0, Vec::len)
 		} else {
 			self.lines_count()
 		};
@@ -1400,6 +2155,8 @@ impl DrawableComponent for DiffComponent {
 				(current_width / 2)
 					.saturating_sub(2 + 1 + line_num_width + 1)
 					.into()
+			} else if self.is_delta_preview() {
+				usize::from(current_width)
 			} else {
 				// In unified mode with line numbers
 				let line_num_overhead = line_num_width * 2 + 3;
@@ -1407,7 +2164,7 @@ impl DrawableComponent for DiffComponent {
 			};
 
 		self.horizontal_scroll.update_no_selection(
-			self.longest_line,
+			self.longest_line.get(),
 			panel_content_width,
 		);
 
@@ -1448,6 +2205,8 @@ impl DrawableComponent for DiffComponent {
 				current_height,
 				&hunk_info,
 			)?;
+		} else if self.is_delta_preview() && !self.pending {
+			self.draw_delta(f, r, &title, current_height);
 		} else {
 			let txt = if self.pending {
 				vec![Line::from(vec![Span::styled(
@@ -1519,6 +2278,7 @@ impl Component for DiffComponent {
 		);
 
 		if !self.is_immutable {
+			// Hunk-level stage/unstage — works in all modes including delta
 			out.push(CommandInfo::new(
 				strings::commands::diff_hunk_remove(&self.key_config),
 				self.selected_hunk.is_some(),
@@ -1534,17 +2294,18 @@ impl Component for DiffComponent {
 				self.selected_hunk.is_some(),
 				self.focused() && !self.is_stage(),
 			));
-			out.push(CommandInfo::new(
-				strings::commands::diff_lines_revert(
-					&self.key_config,
-				),
-				//TODO: only if any modifications are selected
-				true,
-				self.focused() && !self.is_stage(),
-			));
+			// Line-level stage/unstage
+			if !self.is_delta_preview() {
+				out.push(CommandInfo::new(
+					strings::commands::diff_lines_revert(
+						&self.key_config,
+					),
+					true,
+					self.focused() && !self.is_stage(),
+				));
+			}
 			out.push(CommandInfo::new(
 				strings::commands::diff_lines_stage(&self.key_config),
-				//TODO: only if any modifications are selected
 				true,
 				self.focused() && !self.is_stage(),
 			));
@@ -1552,7 +2313,6 @@ impl Component for DiffComponent {
 				strings::commands::diff_lines_unstage(
 					&self.key_config,
 				),
-				//TODO: only if any modifications are selected
 				true,
 				self.focused() && self.is_stage(),
 			));
@@ -1667,6 +2427,7 @@ impl Component for DiffComponent {
 					self.key_config.keys.status_reset_item,
 				) && !self.is_immutable
 					&& !self.is_stage()
+					&& !self.is_delta_preview()
 				{
 					if let Some(diff) = &self.diff {
 						if diff.untracked {
@@ -1688,6 +2449,7 @@ impl Component for DiffComponent {
 					self.key_config.keys.diff_reset_lines,
 				) && !self.is_immutable
 					&& !self.is_stage()
+					&& !self.is_delta_preview()
 				{
 					if let Some(diff) = &self.diff {
 						//TODO: reset untracked lines

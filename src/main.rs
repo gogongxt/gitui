@@ -59,6 +59,7 @@
 //TODO:
 // #![deny(clippy::expect_used)]
 
+mod ansi;
 mod app;
 mod args;
 mod bug_report;
