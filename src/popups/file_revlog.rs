@@ -174,6 +174,7 @@ impl FileRevlogPopup {
 								open_request.file_path.clone(),
 								false,
 								last,
+								diff_params.diff_type,
 							);
 
 							return Ok(());

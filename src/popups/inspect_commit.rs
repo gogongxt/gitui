@@ -294,7 +294,12 @@ impl InspectCommitPopup {
 						self.git_diff.last()?
 					{
 						if params == diff_params {
-							self.diff.update(f.path, false, last);
+							self.diff.update(
+								f.path,
+								false,
+								last,
+								diff_params.diff_type,
+							);
 							return Ok(());
 						}
 					}

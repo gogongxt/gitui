@@ -496,7 +496,7 @@ impl Status {
 
 			let diff_params = DiffParams {
 				path: path.clone(),
-				diff_type,
+				diff_type: diff_type.clone(),
 				options: self.options.borrow().diff_options(),
 			};
 
@@ -506,7 +506,8 @@ impl Status {
 				if let Some((params, last)) = self.git_diff.last()? {
 					if params == diff_params {
 						// all params match, so we might need to update
-						self.diff.update(path, is_stage, last);
+						self.diff
+							.update(path, is_stage, last, diff_type);
 					} else {
 						// params changed, we need to request the right diff
 						self.request_diff(
@@ -533,8 +534,9 @@ impl Status {
 		path: String,
 		is_stage: bool,
 	) -> Result<(), anyhow::Error> {
+		let diff_type = diff_params.diff_type.clone();
 		if let Some(diff) = self.git_diff.request(diff_params)? {
-			self.diff.update(path, is_stage, diff);
+			self.diff.update(path, is_stage, diff, diff_type);
 		} else {
 			self.diff.clear(true);
 		}

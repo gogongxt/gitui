@@ -851,7 +851,7 @@ pub mod commands {
 				"Toggle Diff Mode [{}]",
 				key_config.get_hint(key_config.keys.diff_mode_toggle),
 			),
-			"toggle between unified and side-by-side diff",
+			"cycle between unified, side-by-side, delta, and delta side-by-side diff",
 			CMD_GROUP_DIFF,
 		)
 	}
