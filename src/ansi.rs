@@ -104,7 +104,7 @@ fn apply_sgr(style: Style, params: &str) -> Style {
 			}
 			23 => result = result.remove_modifier(Modifier::ITALIC),
 			24 => {
-				result = result.remove_modifier(Modifier::UNDERLINED)
+				result = result.remove_modifier(Modifier::UNDERLINED);
 			}
 			30..=37 => {
 				result =
