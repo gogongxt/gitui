@@ -1385,7 +1385,29 @@ impl DiffComponent {
 		let mut display_positions = Vec::new();
 
 		for (idx, line) in lines.iter().enumerate() {
-			let wrapped = Self::wrap_line(line, panel_width);
+			// ansi_to_lines adds a trailing space for \x1b[K]
+			// (erase-in-line) to make bg visible. When the line
+			// already fills the panel width, this extra space
+			// causes a spurious wrap. Strip it only in that case.
+			let content_len: usize = line
+				.spans
+				.iter()
+				.map(|s| s.content.chars().count())
+				.sum();
+			let trimmed_line = if content_len > panel_width {
+				let mut spans: Vec<Span<'static>> =
+					line.spans.clone();
+				while spans
+					.last()
+					.is_some_and(|s| s.content.trim().is_empty())
+				{
+					spans.pop();
+				}
+				Line::from(spans)
+			} else {
+				line.clone()
+			};
+			let wrapped = Self::wrap_line(&trimmed_line, panel_width);
 			for wline in wrapped {
 				display_hunks
 					.push(hunk_map.get(idx).copied().unwrap_or(0));
@@ -1740,7 +1762,10 @@ impl DiffComponent {
 			let mut remaining = span.content.as_ref();
 			let style = span.style;
 
-			while !remaining.is_empty() {
+			loop {
+				if remaining.is_empty() {
+					break;
+				}
 				let space = width.saturating_sub(current_width);
 				if space == 0 {
 					result.push(Line::from(std::mem::take(
@@ -1757,28 +1782,28 @@ impl DiffComponent {
 						style,
 					));
 					current_width += char_count;
-					remaining = "";
-				} else {
-					// Find byte offset after `space` characters
-					let mut byte_end = remaining.len();
-					let mut taken = 0;
-					for (i, _) in remaining.char_indices() {
-						if taken == space {
-							byte_end = i;
-							break;
-						}
-						taken += 1;
-					}
-					current_spans.push(Span::styled(
-						Cow::Owned(remaining[..byte_end].to_string()),
-						style,
-					));
-					remaining = &remaining[byte_end..];
-					result.push(Line::from(std::mem::take(
-						&mut current_spans,
-					)));
-					current_width = 0;
+					break;
 				}
+
+				// Find byte offset after `space` characters
+				let mut byte_end = remaining.len();
+				let mut taken = 0;
+				for (i, _) in remaining.char_indices() {
+					if taken == space {
+						byte_end = i;
+						break;
+					}
+					taken += 1;
+				}
+				current_spans.push(Span::styled(
+					Cow::Owned(remaining[..byte_end].to_string()),
+					style,
+				));
+				remaining = &remaining[byte_end..];
+				result.push(Line::from(std::mem::take(
+					&mut current_spans,
+				)));
+				current_width = 0;
 			}
 		}
 
@@ -2571,6 +2596,7 @@ impl Component for DiffComponent {
 mod tests {
 	use super::*;
 	use crate::ui::style::Theme;
+	use ratatui::style::{Color, Style};
 	use std::io::Write;
 	use std::rc::Rc;
 	use tempfile::NamedTempFile;
@@ -2637,5 +2663,134 @@ mod tests {
 				)
 			);
 		}
+	}
+
+	#[test]
+	fn test_wrap_line_exact_width() {
+		let line = Line::from(Span::raw("a".repeat(40)));
+		let wrapped = DiffComponent::wrap_line(&line, 40);
+		assert_eq!(
+			wrapped.len(),
+			1,
+			"exact width should produce 1 line, got {}",
+			wrapped.len()
+		);
+	}
+
+	#[test]
+	fn test_wrap_line_over_width() {
+		let line = Line::from(Span::raw("a".repeat(41)));
+		let wrapped = DiffComponent::wrap_line(&line, 40);
+		assert_eq!(wrapped.len(), 2);
+	}
+
+	#[test]
+	fn test_wrap_line_multi_span_exact_width() {
+		let line = Line::from(vec![
+			Span::raw("a".repeat(20)),
+			Span::raw("b".repeat(20)),
+		]);
+		let wrapped = DiffComponent::wrap_line(&line, 40);
+		assert_eq!(
+			wrapped.len(),
+			1,
+			"multi-span exact width should produce 1 line, got {}",
+			wrapped.len()
+		);
+	}
+
+	/// Simulate what rebuild_display_lines does: strip trailing
+	/// whitespace-only spans when content exceeds panel width,
+	/// then wrap.
+	fn simulate_trim_and_wrap(
+		line: &Line<'static>,
+		panel_width: usize,
+	) -> Vec<Line<'static>> {
+		let content_len: usize = line
+			.spans
+			.iter()
+			.map(|s| s.content.chars().count())
+			.sum();
+		let trimmed_line = if content_len > panel_width {
+			let mut spans: Vec<Span<'static>> = line.spans.clone();
+			while spans
+				.last()
+				.is_some_and(|s| s.content.trim().is_empty())
+			{
+				spans.pop();
+			}
+			Line::from(spans)
+		} else {
+			line.clone()
+		};
+		DiffComponent::wrap_line(&trimmed_line, panel_width)
+	}
+
+	#[test]
+	fn test_blank_line_preserves_background() {
+		// Simulate: \x1b[42m \x1b[0K \x1b[0m → green bg space
+		// ansi_to_lines produces: Span(" ", bg=green) + Span(" ", bg=green, from \x1b[K])
+		let green = Style::default().bg(Color::Green);
+		let line = Line::from(vec![
+			Span::styled(Cow::Owned(" ".to_string()), green),
+			Span::styled(Cow::Owned(" ".to_string()), green),
+		]);
+		let wrapped = simulate_trim_and_wrap(&line, 40);
+		// Blank line should be preserved (not stripped)
+		assert_eq!(
+			wrapped.len(),
+			1,
+			"blank line with bg should be 1 line"
+		);
+		// Should have background color
+		let has_bg =
+			wrapped[0].spans.iter().any(|s| s.style.bg.is_some());
+		assert!(has_bg, "blank line should have background color");
+	}
+
+	#[test]
+	fn test_full_width_line_no_extra_line() {
+		// Simulate: 40 chars of content + 1 trailing space from \x1b[K]
+		let green = Style::default().bg(Color::Green);
+		let mut spans: Vec<Span<'static>> = (0..40)
+			.map(|i| {
+				Span::styled(
+					Cow::Owned(format!("{}", i % 10)),
+					Style::default(),
+				)
+			})
+			.collect();
+		// Trailing space from \x1b[K]
+		spans.push(Span::styled(Cow::Owned(" ".to_string()), green));
+		let line = Line::from(spans);
+		let wrapped = simulate_trim_and_wrap(&line, 40);
+		assert_eq!(
+			wrapped.len(),
+			1,
+			"full-width line + trailing space should produce 1 line, got {}",
+			wrapped.len()
+		);
+	}
+
+	#[test]
+	fn test_over_width_line_wraps_correctly() {
+		// 41 chars + trailing space from \x1b[K]
+		let green = Style::default().bg(Color::Green);
+		let mut spans: Vec<Span<'static>> = (0..41)
+			.map(|i| {
+				Span::styled(
+					Cow::Owned(format!("{}", i % 10)),
+					Style::default(),
+				)
+			})
+			.collect();
+		spans.push(Span::styled(Cow::Owned(" ".to_string()), green));
+		let line = Line::from(spans);
+		let wrapped = simulate_trim_and_wrap(&line, 40);
+		assert_eq!(
+			wrapped.len(),
+			2,
+			"41 chars should wrap into 2 lines"
+		);
 	}
 }
