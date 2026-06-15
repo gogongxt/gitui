@@ -872,10 +872,19 @@ impl DiffComponent {
 
 	fn stage_lines(&self) {
 		if let Some(diff) = &self.diff {
-			//TODO: support untracked files as well
-			if !diff.untracked {
-				let selected_lines = self.selected_lines();
+			let selected_lines = self.selected_lines();
 
+			if diff.untracked {
+				try_or_popup!(
+					self,
+					"(un)stage lines:",
+					sync::stage_lines_untracked(
+						&self.repo.borrow(),
+						&self.current.path,
+						&selected_lines,
+					)
+				);
+			} else {
 				try_or_popup!(
 					self,
 					"(un)stage lines:",
@@ -886,9 +895,9 @@ impl DiffComponent {
 						&selected_lines,
 					)
 				);
-
-				self.queue_update();
 			}
+
+			self.queue_update();
 		}
 	}
 

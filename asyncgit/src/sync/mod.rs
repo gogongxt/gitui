@@ -91,7 +91,9 @@ pub(crate) use repository::{gix_repo, repo};
 pub use repository::{RepoPath, RepoPathRef};
 pub use reset::{reset_repo, reset_stage, reset_workdir};
 pub use reword::reword;
-pub use staging::{discard_lines, stage_lines};
+pub use staging::{
+	discard_lines, stage_lines, stage_lines_untracked,
+};
 pub use stash::{
 	get_stashes, stash_apply, stash_drop, stash_pop, stash_save,
 };

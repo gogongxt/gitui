@@ -1,8 +1,10 @@
 mod discard_tracked;
 mod stage_tracked;
+mod stage_untracked;
 
 pub use discard_tracked::discard_lines;
 pub use stage_tracked::stage_lines;
+pub use stage_untracked::stage_lines_untracked;
 
 use super::{
 	diff::DiffLinePosition, patches::HunkLines, utils::work_dir,
