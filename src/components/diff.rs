@@ -174,6 +174,7 @@ pub struct DiffComponent {
 	delta_line_hunks: RefCell<Vec<usize>>,
 	delta_line_positions: RefCell<Vec<Option<DiffLinePosition>>>,
 	last_delta_width: Cell<u16>,
+	delta_display_lines: RefCell<Vec<Line<'static>>>,
 }
 
 impl DiffComponent {
@@ -201,16 +202,13 @@ impl DiffComponent {
 			delta_line_hunks: RefCell::new(Vec::new()),
 			delta_line_positions: RefCell::new(Vec::new()),
 			last_delta_width: Cell::new(0),
+			delta_display_lines: RefCell::new(Vec::new()),
 		}
 	}
 	///
 	fn can_scroll(&self) -> bool {
 		if self.is_delta_preview() {
-			return self
-				.delta_output
-				.borrow()
-				.as_ref()
-				.is_some_and(|l| l.len() > 1);
+			return self.delta_display_lines.borrow().len() > 1;
 		}
 		self.diff.as_ref().is_some_and(|diff| diff.lines > 1)
 	}
@@ -225,6 +223,7 @@ impl DiffComponent {
 		*self.delta_output.borrow_mut() = None;
 		self.delta_line_hunks.borrow_mut().clear();
 		self.delta_line_positions.borrow_mut().clear();
+		self.delta_display_lines.borrow_mut().clear();
 		self.longest_line.set(0);
 		self.vertical_scroll.reset();
 		self.horizontal_scroll.reset();
@@ -283,12 +282,12 @@ impl DiffComponent {
 					self.selection = Selection::Single(0);
 				}
 				self.run_delta();
-				// Clamp selection to new delta line count
+				// Clamp selection to new display line count
 				let max = self
-					.delta_output
+					.delta_display_lines
 					.borrow()
-					.as_ref()
-					.map_or(0, |l| l.len().saturating_sub(1));
+					.len()
+					.saturating_sub(1);
 				if let Selection::Single(line) = &self.selection {
 					if *line > max {
 						self.selection = Selection::Single(max);
@@ -320,13 +319,13 @@ impl DiffComponent {
 	}
 
 	fn move_selection(&mut self, move_type: ScrollType) {
-		// In delta mode, scroll based on delta_output lines
+		// In delta mode, scroll based on display lines
 		if self.is_delta_preview() {
 			let max = self
-				.delta_output
+				.delta_display_lines
 				.borrow()
-				.as_ref()
-				.map_or(0, |l| l.len().saturating_sub(1));
+				.len()
+				.saturating_sub(1);
 			let new_start = match move_type {
 				ScrollType::Down => {
 					let next =
@@ -432,11 +431,7 @@ impl DiffComponent {
 
 	fn lines_count(&self) -> usize {
 		if self.is_delta_preview() {
-			return self
-				.delta_output
-				.borrow()
-				.as_ref()
-				.map_or(0, Vec::len);
+			return self.delta_display_lines.borrow().len();
 		}
 		self.diff.as_ref().map_or(0, |diff| diff.lines)
 	}
@@ -1171,15 +1166,15 @@ impl DiffComponent {
 			return None;
 		}
 
-		let width = width.max(20);
 		let mut delta_args = vec![
-			"--width".to_string(),
-			width.to_string(),
 			"--file-style".to_string(),
 			"omit".to_string(),
 			"--line-numbers".to_string(),
 		];
 		if side_by_side {
+			// Side-by-side: delta controls layout, needs panel width
+			delta_args.push("--width".to_string());
+			delta_args.push(width.max(20).to_string());
 			delta_args.push("--side-by-side".to_string());
 		}
 
@@ -1229,20 +1224,19 @@ impl DiffComponent {
 		*self.delta_output.borrow_mut() = output;
 		self.rebuild_delta_maps();
 		self.last_delta_width.set(self.current_size.get().0);
-		// Update longest_line from delta output for horizontal scrolling
+		// Update longest_line from display lines (wrapped for non-sbs)
 		self.longest_line.set(
-			self.delta_output.borrow().as_ref().map_or(0, |lines| {
-				lines
-					.iter()
-					.map(|line| {
-						line.spans
-							.iter()
-							.map(|s| s.content.chars().count())
-							.sum::<usize>()
-					})
-					.max()
-					.unwrap_or(0)
-			}),
+			self.delta_display_lines
+				.borrow()
+				.iter()
+				.map(|line| {
+					line.spans
+						.iter()
+						.map(|s| s.content.chars().count())
+						.sum::<usize>()
+				})
+				.max()
+				.unwrap_or(0),
 		);
 	}
 
@@ -1357,6 +1351,57 @@ impl DiffComponent {
 		);
 		*self.delta_line_hunks.borrow_mut() = hunk_map;
 		*self.delta_line_positions.borrow_mut() = pos_map;
+		drop(delta);
+
+		// Build wrapped display lines for non-side-by-side delta
+		self.rebuild_display_lines();
+	}
+
+	/// Wrap delta output lines into display lines based on current panel width.
+	fn rebuild_display_lines(&self) {
+		let panel_width = usize::from(self.current_size.get().0);
+		let is_sbs = self.diff_mode == DiffMode::DeltaSideBySide;
+
+		if is_sbs || panel_width == 0 {
+			// Side-by-side: display lines = delta lines (no wrapping)
+			let delta = self.delta_output.borrow();
+			let lines =
+				delta.as_ref().map_or_else(Vec::new, |l| l.clone());
+			*self.delta_display_lines.borrow_mut() = lines;
+			return;
+		}
+
+		let delta = self.delta_output.borrow();
+		let Some(lines) = delta.as_ref() else {
+			self.delta_display_lines.borrow_mut().clear();
+			return;
+		};
+
+		let hunk_map = self.delta_line_hunks.borrow();
+		let pos_map = self.delta_line_positions.borrow();
+
+		let mut display_lines = Vec::new();
+		let mut display_hunks = Vec::new();
+		let mut display_positions = Vec::new();
+
+		for (idx, line) in lines.iter().enumerate() {
+			let wrapped = Self::wrap_line(line, panel_width);
+			for wline in wrapped {
+				display_hunks
+					.push(hunk_map.get(idx).copied().unwrap_or(0));
+				display_positions
+					.push(pos_map.get(idx).copied().unwrap_or(None));
+				display_lines.push(wline);
+			}
+		}
+
+		*self.delta_display_lines.borrow_mut() = display_lines;
+		// Overwrite hunk/pos maps to be display-indexed
+		drop(delta);
+		drop(hunk_map);
+		drop(pos_map);
+		*self.delta_line_hunks.borrow_mut() = display_hunks;
+		*self.delta_line_positions.borrow_mut() = display_positions;
 	}
 
 	/// Parse old and new line numbers from delta gutter spans.
@@ -1436,6 +1481,7 @@ impl DiffComponent {
 			*self.delta_output.borrow_mut() = None;
 			self.delta_line_hunks.borrow_mut().clear();
 			self.delta_line_positions.borrow_mut().clear();
+			self.delta_display_lines.borrow_mut().clear();
 		}
 	}
 
@@ -1677,6 +1723,76 @@ impl DiffComponent {
 		result
 	}
 
+	/// Wrap a styled `Line` into multiple display lines at `width` characters.
+	fn wrap_line(
+		line: &Line<'static>,
+		width: usize,
+	) -> Vec<Line<'static>> {
+		if width == 0 {
+			return vec![line.clone()];
+		}
+
+		let mut result = Vec::new();
+		let mut current_spans: Vec<Span<'static>> = Vec::new();
+		let mut current_width = 0;
+
+		for span in &line.spans {
+			let mut remaining = span.content.as_ref();
+			let style = span.style;
+
+			while !remaining.is_empty() {
+				let space = width.saturating_sub(current_width);
+				if space == 0 {
+					result.push(Line::from(std::mem::take(
+						&mut current_spans,
+					)));
+					current_width = 0;
+					continue;
+				}
+
+				let char_count = remaining.chars().count();
+				if char_count <= space {
+					current_spans.push(Span::styled(
+						Cow::Owned(remaining.to_string()),
+						style,
+					));
+					current_width += char_count;
+					remaining = "";
+				} else {
+					// Find byte offset after `space` characters
+					let mut byte_end = remaining.len();
+					let mut taken = 0;
+					for (i, _) in remaining.char_indices() {
+						if taken == space {
+							byte_end = i;
+							break;
+						}
+						taken += 1;
+					}
+					current_spans.push(Span::styled(
+						Cow::Owned(remaining[..byte_end].to_string()),
+						style,
+					));
+					remaining = &remaining[byte_end..];
+					result.push(Line::from(std::mem::take(
+						&mut current_spans,
+					)));
+					current_width = 0;
+				}
+			}
+		}
+
+		if !current_spans.is_empty() {
+			result.push(Line::from(current_spans));
+		}
+
+		if result.is_empty() {
+			result.push(Line::from(""));
+		}
+
+		result
+	}
+
 	/// Trim a `Line` from the left by `offset` characters, preserving styles.
 	fn trim_line_offset(
 		line: Line<'static>,
@@ -1748,56 +1864,52 @@ impl DiffComponent {
 		title: &str,
 		height: u16,
 	) {
-		let delta = self.delta_output.borrow();
+		let display = self.delta_display_lines.borrow();
 		let panel_width = usize::from(self.current_size.get().0);
 		let scroll = self.vertical_scroll.get_top();
 		let scrolled_right = self.horizontal_scroll.get_right();
 		let cursor = self.selection.get_end().saturating_sub(scroll);
 		let sel_style = self.theme.text(true, true);
-		let txt: Vec<Line<'static>> = delta.as_ref().map_or_else(
-			|| {
-				vec![Line::from(vec![Span::styled(
-					Cow::from("No delta output available."),
-					self.theme.text(false, false),
-				)])]
-			},
-			|lines| {
-				lines
-					.iter()
-					.skip(scroll)
-					.take(usize::from(height))
-					.enumerate()
-					.map(|(i, line)| {
-						let mut line = Self::trim_line_offset(
-							line.clone(),
-							scrolled_right,
-						);
-						line = Self::pad_line_bg(line, panel_width);
-						if i == cursor {
-							for span in &mut line.spans {
-								span.style = sel_style;
-							}
-							// Pad to full width with selection style
-							let content_width: usize = line
-								.spans
-								.iter()
-								.map(|s| s.content.chars().count())
-								.sum();
-							if content_width < panel_width {
-								let padding = " ".repeat(
-									panel_width - content_width,
-								);
-								line.spans.push(Span::styled(
-									Cow::Owned(padding),
-									sel_style,
-								));
-							}
+		let txt: Vec<Line<'static>> = if display.is_empty() {
+			vec![Line::from(vec![Span::styled(
+				Cow::from("No delta output available."),
+				self.theme.text(false, false),
+			)])]
+		} else {
+			display
+				.iter()
+				.skip(scroll)
+				.take(usize::from(height))
+				.enumerate()
+				.map(|(i, line)| {
+					let mut line = Self::trim_line_offset(
+						line.clone(),
+						scrolled_right,
+					);
+					line = Self::pad_line_bg(line, panel_width);
+					if i == cursor {
+						for span in &mut line.spans {
+							span.style = sel_style;
 						}
-						line
-					})
-					.collect()
-			},
-		);
+						// Pad to full width with selection style
+						let content_width: usize = line
+							.spans
+							.iter()
+							.map(|s| s.content.chars().count())
+							.sum();
+						if content_width < panel_width {
+							let padding = " "
+								.repeat(panel_width - content_width);
+							line.spans.push(Span::styled(
+								Cow::Owned(padding),
+								sel_style,
+							));
+						}
+					}
+					line
+				})
+				.collect()
+		};
 
 		f.render_widget(
 			Paragraph::new(txt).block(
@@ -2103,7 +2215,7 @@ impl DrawableComponent for DiffComponent {
 		let lines_count = if self.diff_mode == DiffMode::SideBySide {
 			self.side_by_side_lines_count()
 		} else if self.is_delta_preview() {
-			self.delta_output.borrow().as_ref().map_or(0, Vec::len)
+			self.delta_display_lines.borrow().len()
 		} else {
 			self.lines_count()
 		};
