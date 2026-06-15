@@ -283,26 +283,6 @@ impl DiffComponent {
 					self.selection = Selection::Single(0);
 				}
 				self.run_delta();
-				// Update longest_line from delta output for horizontal scrolling
-				self.longest_line.set(
-					self.delta_output.borrow().as_ref().map_or(
-						0,
-						|lines| {
-							lines
-								.iter()
-								.map(|line| {
-									line.spans
-										.iter()
-										.map(|s| {
-											s.content.chars().count()
-										})
-										.sum::<usize>()
-								})
-								.max()
-								.unwrap_or(0)
-						},
-					),
-				);
 				// Clamp selection to new delta line count
 				let max = self
 					.delta_output
@@ -1249,6 +1229,21 @@ impl DiffComponent {
 		*self.delta_output.borrow_mut() = output;
 		self.rebuild_delta_maps();
 		self.last_delta_width.set(self.current_size.get().0);
+		// Update longest_line from delta output for horizontal scrolling
+		self.longest_line.set(
+			self.delta_output.borrow().as_ref().map_or(0, |lines| {
+				lines
+					.iter()
+					.map(|line| {
+						line.spans
+							.iter()
+							.map(|s| s.content.chars().count())
+							.sum::<usize>()
+					})
+					.max()
+					.unwrap_or(0)
+			}),
+		);
 	}
 
 	/// Build mappings from delta display lines to hunk indices and diff line positions.
@@ -1413,31 +1408,7 @@ impl DiffComponent {
 		{
 			return;
 		}
-		let output = Self::run_delta_subprocess(
-			&self.repo,
-			&self.current.path,
-			&self.current.diff_type,
-			current_width,
-			self.diff_mode == DiffMode::DeltaSideBySide,
-		);
-		*self.delta_output.borrow_mut() = output;
-		self.rebuild_delta_maps();
-		self.last_delta_width.set(current_width);
-		// Update longest_line from new delta output
-		self.longest_line.set(
-			self.delta_output.borrow().as_ref().map_or(0, |lines| {
-				lines
-					.iter()
-					.map(|line| {
-						line.spans
-							.iter()
-							.map(|s| s.content.chars().count())
-							.sum::<usize>()
-					})
-					.max()
-					.unwrap_or(0)
-			}),
-		);
+		self.run_delta();
 	}
 
 	/// Cycle: `Unified` → `SideBySide` → `Delta` → `DeltaSideBySide` → `Unified`
