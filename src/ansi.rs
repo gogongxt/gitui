@@ -4,12 +4,49 @@ use ratatui::{
 };
 use std::borrow::Cow;
 
+/// When delta outputs a long line it sometimes resets styles mid-line and
+/// restores only bg, not fg. After a line's spans are fully parsed we scan
+/// them to find the dominant fg color (the first rgb fg seen while bg is
+/// active) and back-fill any bg spans that are missing fg.
+///
+/// `fallback_fg` carries the rgb fg from the previous line, used when delta
+/// wraps a long line across multiple output lines and the continuation lines
+/// have no rgb fg of their own.
+fn normalize_line_fg(
+	spans: &mut Vec<Span<'static>>,
+	fallback_fg: Option<Color>,
+) {
+	// Prefer an rgb fg found in this line; fall back to the previous line's fg.
+	let content_fg: Option<Color> = spans
+		.iter()
+		.filter(|s| s.style.bg.is_some())
+		.find_map(|s| match s.style.fg {
+			Some(Color::Rgb(_, _, _)) => s.style.fg,
+			_ => None,
+		})
+		.or(fallback_fg);
+	let Some(fg) = content_fg else {
+		return;
+	};
+	for span in spans.iter_mut() {
+		if span.style.bg.is_some() && span.style.fg.is_none() {
+			span.style = span.style.fg(fg);
+		}
+	}
+}
+
 /// Convert ANSI-colored text into ratatui `Line`s.
 pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 	let mut lines: Vec<Line<'static>> = Vec::new();
 	let mut current_style = Style::default();
 	let mut current_spans: Vec<Span<'static>> = Vec::new();
 	let mut buf = String::new();
+	// Track the last *rgb* fg color seen while a bg was active. Delta
+	// sometimes resets styles mid-line and restores bg but not fg (e.g.
+	// for long lines crossing a syntax-highlight boundary).  We only
+	// track rgb fg — std/indexed colors (like the blue gutter `│`) are
+	// decorations, not content colors.
+	let mut last_bg_fg: Option<Color> = None;
 	let mut chars = input.chars().peekable();
 
 	while let Some(c) = chars.next() {
@@ -40,6 +77,27 @@ pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 				// Only process SGR sequences (ending with 'm')
 				if final_char == Some('m') && !params.is_empty() {
 					current_style = apply_sgr(current_style, &params);
+					// Delta sometimes resets styles mid-line and restores bg
+					// but not fg. Track the last fg seen while bg was active,
+					// and re-apply it when bg comes back without an explicit fg.
+					if current_style.bg.is_some() {
+						if let Some(fg) = current_style.fg {
+							// Only track rgb fg — std/indexed colors
+							// (like blue gutter `│`) are decorations,
+							// not content colors.
+							if matches!(fg, Color::Rgb(_, _, _)) {
+								last_bg_fg = Some(fg);
+							}
+						} else if let Some(inherited) = last_bg_fg {
+							// bg is set but fg was cleared by a prior reset —
+							// restore the last known fg color.
+							current_style =
+								current_style.fg(inherited);
+						}
+					}
+					// When bg is cleared (reset or explicit bg-reset) we keep
+					// last_bg_fg so it survives a \x1b[0m...\x1b[48;...m pair.
+					// It is reset only at line boundaries (newline handling below).
 				}
 				// Erase-in-line (K): add a space so the background color renders
 				if final_char == Some('K')
@@ -57,6 +115,25 @@ pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 				));
 				buf.clear();
 			}
+			normalize_line_fg(&mut current_spans, last_bg_fg);
+			// Update last_bg_fg from this line for the next line to inherit.
+			// Delta wraps long lines across multiple output lines; each wrapped
+			// continuation shares the same fg as the first segment.
+			if let Some(new_fg) = current_spans
+				.iter()
+				.filter(|s| s.style.bg.is_some())
+				.find_map(|s| match s.style.fg {
+					Some(Color::Rgb(_, _, _)) => s.style.fg,
+					_ => None,
+				}) {
+				last_bg_fg = Some(new_fg);
+			} else if current_spans
+				.iter()
+				.all(|s| s.style.bg.is_none())
+			{
+				// Line with no bg content (separator/header): clear fg memory.
+				last_bg_fg = None;
+			}
 			lines
 				.push(Line::from(std::mem::take(&mut current_spans)));
 		} else if c == '\r' {
@@ -72,6 +149,7 @@ pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 			.push(Span::styled(Cow::Owned(buf), current_style));
 	}
 	if !current_spans.is_empty() {
+		normalize_line_fg(&mut current_spans, last_bg_fg);
 		lines.push(Line::from(current_spans));
 	}
 
@@ -355,5 +433,148 @@ mod tests {
 				}
 			}
 		}
+	}
+
+	#[test]
+	fn test_fg_inherited_after_reset_with_bg_restore() {
+		// Simulate delta mid-line reset: sets bg+fg, resets, restores bg but not fg.
+		// \x1b[48;2;0;40;0;38;2;200;200;200m  → bg+fg set
+		// first\x1b[0m                          → reset
+		// \x1b[48;2;0;40;0m                     → only bg restored
+		// second\x1b[0m
+		let input = "\x1b[48;2;0;40;0m\x1b[38;2;200;200;200mfirst\x1b[0m\x1b[48;2;0;40;0msecond\x1b[0m";
+		let lines = ansi_to_lines(input);
+		assert_eq!(lines.len(), 1);
+		let spans = &lines[0].spans;
+		let first =
+			spans.iter().find(|s| s.content.as_ref() == "first");
+		let second =
+			spans.iter().find(|s| s.content.as_ref() == "second");
+		assert!(first.is_some(), "should have 'first' span");
+		assert!(second.is_some(), "should have 'second' span");
+		let first_fg = first.unwrap().style.fg;
+		let second_fg = second.unwrap().style.fg;
+		assert_eq!(
+			first_fg,
+			Some(Color::Rgb(200, 200, 200)),
+			"first span should have fg"
+		);
+		assert_eq!(
+			second_fg, first_fg,
+			"second span should inherit fg from first (delta mid-line reset bug)"
+		);
+	}
+
+	#[test]
+	fn test_normalize_line_fg_fills_bg_spans_missing_fg() {
+		// Simulate SBS delta: content with bg+rgb-fg, then reset, then
+		// more content with bg only (no fg).  normalize_line_fg should
+		// back-fill the missing fg from the rgb fg span.
+		// \x1b[48;2;0;40;0;38;2;198;208;245mcontent\x1b[0m
+		// \x1b[48;2;0;40;0mnofg\x1b[0m
+		let input = "\x1b[48;2;0;40;0m\x1b[38;2;198;208;245mcontent\x1b[0m\x1b[48;2;0;40;0mnofg\x1b[0m";
+		let lines = ansi_to_lines(input);
+		assert_eq!(lines.len(), 1);
+		let spans = &lines[0].spans;
+		let content =
+			spans.iter().find(|s| s.content.as_ref() == "content");
+		let nofg =
+			spans.iter().find(|s| s.content.as_ref() == "nofg");
+		assert!(content.is_some());
+		assert!(nofg.is_some());
+		let expected_fg = Some(Color::Rgb(198, 208, 245));
+		assert_eq!(
+			content.unwrap().style.fg,
+			expected_fg,
+			"content span should have rgb fg"
+		);
+		assert_eq!(
+			nofg.unwrap().style.fg,
+			expected_fg,
+			"nofg span should be back-filled with the same rgb fg"
+		);
+	}
+
+	#[test]
+	fn test_normalize_line_fg_ignores_standard_color_gutter() {
+		// Gutter uses std color 34 (blue) which should NOT be used as
+		// content_fg. Only rgb fg should be considered.
+		// delta resets after each gutter segment, then sets only bg.
+		// Since there is no rgb fg in any bg span, content keeps fg=None.
+		let input = "\x1b[34m\u{2502}\x1b[0m\x1b[48;2;0;40;0mnofg\x1b[0m";
+		let lines = ansi_to_lines(input);
+		assert_eq!(lines.len(), 1);
+		let spans = &lines[0].spans;
+		let nofg = spans.iter().find(|s| s.content.as_ref() == "nofg");
+		assert!(nofg.is_some());
+		assert_eq!(
+			nofg.unwrap().style.fg,
+			None,
+			"nofg span should keep fg=None when no rgb fg exists"
+		);
+	}
+
+	#[test]
+	fn test_cross_line_fg_inheritance_for_sbs_wrap() {
+		// Simulate delta SBS wrapping a long line across two output lines.
+		// Real delta pattern: gutter uses blue + reset, then content uses
+		// bg+rgb-fg (first line) or bg only (continuation, fg=None after reset).
+		let input = concat!(
+			"\x1b[34m\u{2502}\x1b[38;5;28m 16 \x1b[34m\u{2502}\x1b[0m",
+			"\x1b[48;2;0;40;0;38;2;198;208;245mpart one",
+			"\x1b[34m\u{21b5}\x1b[0m\n",
+			"\x1b[34m\u{2502}\x1b[38;5;28m    \x1b[34m\u{2502}\x1b[0m",
+			"\x1b[48;2;0;40;0mpart two",
+			"\x1b[34m\u{21b5}\x1b[0m\n",
+		);
+		let lines = ansi_to_lines(input);
+		assert_eq!(lines.len(), 2);
+
+		let spans1 = &lines[0].spans;
+		let part1 = spans1.iter().find(|s| s.content.as_ref() == "part one");
+		assert!(part1.is_some());
+		assert_eq!(
+			part1.unwrap().style.fg,
+			Some(Color::Rgb(198, 208, 245)),
+			"line 1 content should have rgb fg"
+		);
+
+		let spans2 = &lines[1].spans;
+		let part2 = spans2.iter().find(|s| s.content.as_ref() == "part two");
+		assert!(part2.is_some());
+		assert_eq!(
+			part2.unwrap().style.fg,
+			Some(Color::Rgb(198, 208, 245)),
+			"line 2 continuation should inherit rgb fg from line 1"
+		);
+	}
+
+	#[test]
+	fn test_cross_line_fg_inheritance_stops_at_separator() {
+		// A separator/header line (no bg content) should clear last_bg_fg,
+		// preventing leakage into unrelated content below.
+		let input = concat!(
+			"\x1b[34m\u{2502}\x1b[38;5;28m 16 \x1b[34m\u{2502}\x1b[0m",
+			"\x1b[48;2;0;40;0;38;2;198;208;245mreal content",
+			"\x1b[34m\u{21b5}\x1b[0m\n",
+			"\x1b[34m",
+			"\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+			"\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+			"\x1b[0m\n",
+			"\x1b[34m\u{2502}\x1b[38;5;28m  1 \x1b[34m\u{2502}\x1b[0m",
+			"\x1b[48;2;0;40;0mother content",
+			"\x1b[34m\u{21b5}\x1b[0m\n",
+		);
+		let lines = ansi_to_lines(input);
+		assert_eq!(lines.len(), 3);
+
+		let spans3 = &lines[2].spans;
+		let other = spans3.iter().find(|s| s.content.as_ref() == "other content");
+		assert!(other.is_some());
+		assert_eq!(
+			other.unwrap().style.fg,
+			None,
+			"fg should not leak past a separator line"
+		);
 	}
 }

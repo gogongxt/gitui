@@ -481,10 +481,6 @@ impl DiffComponent {
 				(self.current_size.get().0 / 2)
 					.saturating_sub(2 + 1 + line_num_width + 1)
 					.into()
-			} else if self.is_delta_preview() {
-				// In delta mode, line numbers are already in delta output
-				// Only subtract borders
-				usize::from(self.current_size.get().0)
 			} else {
 				// In unified mode, we have two line number columns
 				// overhead = 1 (marker) + line_num_width * 2 + 1 (space between line numbers) + 1 (space after line numbers)
@@ -1233,20 +1229,6 @@ impl DiffComponent {
 		*self.delta_output.borrow_mut() = output;
 		self.rebuild_delta_maps();
 		self.last_delta_width.set(self.current_size.get().0);
-		// Update longest_line from display lines (wrapped for non-sbs)
-		self.longest_line.set(
-			self.delta_display_lines
-				.borrow()
-				.iter()
-				.map(|line| {
-					line.spans
-						.iter()
-						.map(|s| s.content.chars().count())
-						.sum::<usize>()
-				})
-				.max()
-				.unwrap_or(0),
-		);
 	}
 
 	/// Build mappings from delta display lines to hunk indices and diff line positions.
@@ -1827,37 +1809,6 @@ impl DiffComponent {
 		result
 	}
 
-	/// Trim a `Line` from the left by `offset` characters, preserving styles.
-	fn trim_line_offset(
-		line: Line<'static>,
-		offset: usize,
-	) -> Line<'static> {
-		if offset == 0 {
-			return line;
-		}
-		let mut remaining = offset;
-		let mut new_spans: Vec<Span<'static>> = Vec::new();
-		for span in line.spans {
-			let char_count = span.content.chars().count();
-			if remaining >= char_count {
-				// Skip this span entirely
-				remaining -= char_count;
-			} else {
-				// Partially or fully include this span
-				let trimmed: String =
-					span.content.chars().skip(remaining).collect();
-				remaining = 0;
-				if !trimmed.is_empty() {
-					new_spans.push(Span::styled(
-						Cow::Owned(trimmed),
-						span.style,
-					));
-				}
-			}
-		}
-		Line::from(new_spans)
-	}
-
 	/// Pad a line's last span with spaces if it has a background color,
 	/// so the background extends to the full panel width.
 	fn pad_line_bg(
@@ -1869,24 +1820,38 @@ impl DiffComponent {
 			.iter()
 			.map(|s| s.content.chars().count())
 			.sum();
-		if content_width >= width {
+		// Delta output ends with a reset span (\x1b[0m) after the background
+		// color spans, so we scan backwards to find the last span with a bg.
+		let bg_idx =
+			line.spans.iter().rposition(|s| s.style.bg.is_some());
+		let Some(idx) = bg_idx else {
 			return line;
-		}
-		// Check if the last span has a background color
-		if let Some(last) = line.spans.last() {
-			if last.style.bg.is_some() {
-				let pad = width - content_width;
-				// Append spaces to the last span
-				let mut new_content =
-					String::with_capacity(last.content.len() + pad);
-				new_content.push_str(&last.content);
-				for _ in 0..pad {
-					new_content.push(' ');
-				}
-				let idx = line.spans.len() - 1;
-				line.spans[idx] =
-					Span::styled(Cow::Owned(new_content), last.style);
+		};
+		let bg_style = line.spans[idx].style;
+		// Find the fg from any bg span (normalize_line_fg in ansi.rs has
+		// already filled bg spans that were missing fg, so this picks up
+		// the correct content color to apply to trailing no-bg spans like
+		// the → / ↵ markers that delta emits without a background).
+		let inherited_fg = line.spans[..=idx]
+			.iter()
+			.rev()
+			.find(|s| s.style.bg.is_some() && s.style.fg.is_some())
+			.and_then(|s| s.style.fg);
+		// Apply bg (and fg) to any trailing spans that lost their background.
+		for span in &mut line.spans[idx + 1..] {
+			span.style =
+				span.style.bg(bg_style.bg.expect("checked above"));
+			if let Some(fg) = inherited_fg {
+				span.style = span.style.fg(fg);
 			}
+		}
+		// Append padding spaces if the line is shorter than the panel width.
+		if content_width < width {
+			let pad = width - content_width;
+			line.spans.push(Span::styled(
+				Cow::Owned(" ".repeat(pad)),
+				bg_style,
+			));
 		}
 		line
 	}
@@ -1901,7 +1866,6 @@ impl DiffComponent {
 		let display = self.delta_display_lines.borrow();
 		let panel_width = usize::from(self.current_size.get().0);
 		let scroll = self.vertical_scroll.get_top();
-		let scrolled_right = self.horizontal_scroll.get_right();
 		let cursor = self.selection.get_end().saturating_sub(scroll);
 		let sel_style = self.theme.text(true, true);
 		let txt: Vec<Line<'static>> = if display.is_empty() {
@@ -1916,11 +1880,8 @@ impl DiffComponent {
 				.take(usize::from(height))
 				.enumerate()
 				.map(|(i, line)| {
-					let mut line = Self::trim_line_offset(
-						line.clone(),
-						scrolled_right,
-					);
-					line = Self::pad_line_bg(line, panel_width);
+					let mut line =
+						Self::pad_line_bg(line.clone(), panel_width);
 					if i == cursor {
 						for span in &mut line.spans {
 							span.style = sel_style;
@@ -1960,12 +1921,6 @@ impl DiffComponent {
 
 		if self.focused() {
 			self.vertical_scroll.draw(f, r, &self.theme);
-
-			if self.diff_mode != DiffMode::DeltaSideBySide
-				&& self.max_scroll_right() > 0
-			{
-				self.horizontal_scroll.draw(f, r, &self.theme);
-			}
 		}
 	}
 
@@ -2260,30 +2215,28 @@ impl DrawableComponent for DiffComponent {
 			usize::from(current_height),
 		);
 
-		// Calculate content width for horizontal scroll
-		// In side-by-side mode, each panel content width is smaller
-		// chunks[0].width ≈ r.width / 2, content = chunks[0].width - (2 + 1 + line_num_width + 1)
-		// ≈ current_width / 2 - (2 + 1 + line_num_width + 1)
-		// In unified mode, we have two line number columns
-		let line_num_width: u16 =
-			self.get_line_num_width().try_into().unwrap_or(u16::MAX);
-		let panel_content_width: usize =
-			if self.diff_mode == DiffMode::SideBySide {
+		// Calculate content width for horizontal scroll (non-delta modes only)
+		if !self.is_delta_preview() {
+			let line_num_width: u16 = self
+				.get_line_num_width()
+				.try_into()
+				.unwrap_or(u16::MAX);
+			let panel_content_width: usize = if self.diff_mode
+				== DiffMode::SideBySide
+			{
 				(current_width / 2)
 					.saturating_sub(2 + 1 + line_num_width + 1)
 					.into()
-			} else if self.is_delta_preview() {
-				usize::from(current_width)
 			} else {
 				// In unified mode with line numbers
 				let line_num_overhead = line_num_width * 2 + 3;
 				current_width.saturating_sub(line_num_overhead).into()
 			};
-
-		self.horizontal_scroll.update_no_selection(
-			self.longest_line.get(),
-			panel_content_width,
-		);
+			self.horizontal_scroll.update_no_selection(
+				self.longest_line.get(),
+				panel_content_width,
+			);
+		}
 
 		let hunk_info =
 			self.diff.as_ref().map_or_else(String::new, |diff| {
@@ -2483,35 +2436,37 @@ impl Component for DiffComponent {
 				{
 					self.move_selection(ScrollType::PageDown);
 					Ok(EventState::Consumed)
-				} else if key_match(
-					e,
-					self.key_config.keys.move_right,
-				) {
+				} else if !self.is_delta_preview()
+					&& key_match(e, self.key_config.keys.move_right)
+				{
 					self.horizontal_scroll
 						.move_right(HorizontalScrollType::Right);
 					Ok(EventState::Consumed)
-				} else if key_match(e, self.key_config.keys.move_left)
+				} else if !self.is_delta_preview()
+					&& key_match(e, self.key_config.keys.move_left)
 				{
 					self.horizontal_scroll
 						.move_right(HorizontalScrollType::Left);
 					Ok(EventState::Consumed)
-				} else if key_match(
-					e,
-					self.key_config.keys.diff_line_start,
-				) || key_match(
-					e,
-					GituiKeyEvent::new(
-						KeyCode::Char('_'),
-						KeyModifiers::empty(),
-					),
-				) {
+				} else if !self.is_delta_preview()
+					&& (key_match(
+						e,
+						self.key_config.keys.diff_line_start,
+					) || key_match(
+						e,
+						GituiKeyEvent::new(
+							KeyCode::Char('_'),
+							KeyModifiers::empty(),
+						),
+					)) {
 					self.horizontal_scroll
 						.move_right(HorizontalScrollType::Home);
 					Ok(EventState::Consumed)
-				} else if key_match(
-					e,
-					self.key_config.keys.diff_line_end,
-				) {
+				} else if !self.is_delta_preview()
+					&& key_match(
+						e,
+						self.key_config.keys.diff_line_end,
+					) {
 					self.horizontal_scroll
 						.move_right(HorizontalScrollType::End);
 					Ok(EventState::Consumed)
@@ -2800,6 +2755,109 @@ mod tests {
 			wrapped.len(),
 			2,
 			"41 chars should wrap into 2 lines"
+		);
+	}
+
+	#[test]
+	fn test_pad_line_bg_scans_backwards_past_reset_span() {
+		// Simulate what delta produces:
+		// content with bg, then a reset span (no bg), then need padding
+		let bg_style = Style::default().bg(Color::Green);
+		let reset_style = Style::default();
+		let line = Line::from(vec![
+			Span::styled(Cow::Owned("hello".to_string()), bg_style),
+			Span::styled(Cow::Owned("".to_string()), reset_style),
+		]);
+		let padded = DiffComponent::pad_line_bg(line, 10);
+		let total_width: usize = padded
+			.spans
+			.iter()
+			.map(|s| s.content.chars().count())
+			.sum();
+		assert_eq!(total_width, 10, "should be padded to width 10");
+		// The padding span should have the bg color
+		let last = padded.spans.last().unwrap();
+		assert_eq!(
+			last.style.bg,
+			Some(Color::Green),
+			"padding span should carry the bg color"
+		);
+	}
+
+	#[test]
+	fn test_pad_line_bg_long_line_sublines_have_bg() {
+		// Simulate a 250-char line that wraps into sublines at width=80
+		// All spans have bg color (like delta content lines)
+		let bg_style = Style::default().bg(Color::Blue);
+		let reset_style = Style::default();
+		// Build: [gutter(no bg, 10 chars)] [content(bg, 230 chars)] [reset(no bg)]
+		let line = Line::from(vec![
+			Span::styled(Cow::Owned("G".repeat(10)), reset_style),
+			Span::styled(Cow::Owned("C".repeat(230)), bg_style),
+			Span::styled(Cow::Owned("".to_string()), reset_style),
+		]);
+		let wrapped = DiffComponent::wrap_line(&line, 80);
+		// Should wrap into ceil(240/80)=3 sublines
+		assert_eq!(
+			wrapped.len(),
+			3,
+			"240 chars at width=80 → 3 sublines"
+		);
+
+		// Each subline that is less than 80 wide should be paddable
+		for (i, subline) in wrapped.iter().enumerate() {
+			let w: usize = subline
+				.spans
+				.iter()
+				.map(|s| s.content.chars().count())
+				.sum();
+			let padded =
+				DiffComponent::pad_line_bg(subline.clone(), 80);
+			let pw: usize = padded
+				.spans
+				.iter()
+				.map(|s| s.content.chars().count())
+				.sum();
+			if w < 80 {
+				assert_eq!(
+					pw, 80,
+					"subline {i} (w={w}) should be padded to 80"
+				);
+				assert_eq!(
+					padded.spans.last().unwrap().style.bg,
+					Some(Color::Blue),
+					"subline {i} padding should have bg color"
+				);
+			} else {
+				assert_eq!(
+					pw, w,
+					"full subline {i} should not be changed"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn test_pad_line_bg_trailing_arrow_gets_bg_even_at_full_width() {
+		// SBS delta: [content with bg][→ no-bg], total == panel_width.
+		// The → should receive the bg color even though no extra padding is needed.
+		let bg_style = Style::default().bg(Color::Green);
+		let reset_style = Style::default();
+		let line = Line::from(vec![
+			Span::styled(
+				Cow::Owned("123456789".to_string()),
+				bg_style,
+			),
+			Span::styled(Cow::Owned("→".to_string()), reset_style),
+		]);
+		let padded = DiffComponent::pad_line_bg(line, 10);
+		let arrow =
+			padded.spans.iter().find(|s| s.content.as_ref() == "→");
+		assert!(arrow.is_some(), "should have → span");
+		assert_eq!(
+			arrow.unwrap().style.bg,
+			Some(Color::Green),
+			"→ span should have bg applied"
 		);
 	}
 }
