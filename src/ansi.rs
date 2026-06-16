@@ -501,11 +501,13 @@ mod tests {
 		// content_fg. Only rgb fg should be considered.
 		// delta resets after each gutter segment, then sets only bg.
 		// Since there is no rgb fg in any bg span, content keeps fg=None.
-		let input = "\x1b[34m\u{2502}\x1b[0m\x1b[48;2;0;40;0mnofg\x1b[0m";
+		let input =
+			"\x1b[34m\u{2502}\x1b[0m\x1b[48;2;0;40;0mnofg\x1b[0m";
 		let lines = ansi_to_lines(input);
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
-		let nofg = spans.iter().find(|s| s.content.as_ref() == "nofg");
+		let nofg =
+			spans.iter().find(|s| s.content.as_ref() == "nofg");
 		assert!(nofg.is_some());
 		assert_eq!(
 			nofg.unwrap().style.fg,
@@ -531,7 +533,8 @@ mod tests {
 		assert_eq!(lines.len(), 2);
 
 		let spans1 = &lines[0].spans;
-		let part1 = spans1.iter().find(|s| s.content.as_ref() == "part one");
+		let part1 =
+			spans1.iter().find(|s| s.content.as_ref() == "part one");
 		assert!(part1.is_some());
 		assert_eq!(
 			part1.unwrap().style.fg,
@@ -540,7 +543,8 @@ mod tests {
 		);
 
 		let spans2 = &lines[1].spans;
-		let part2 = spans2.iter().find(|s| s.content.as_ref() == "part two");
+		let part2 =
+			spans2.iter().find(|s| s.content.as_ref() == "part two");
 		assert!(part2.is_some());
 		assert_eq!(
 			part2.unwrap().style.fg,
@@ -569,7 +573,9 @@ mod tests {
 		assert_eq!(lines.len(), 3);
 
 		let spans3 = &lines[2].spans;
-		let other = spans3.iter().find(|s| s.content.as_ref() == "other content");
+		let other = spans3
+			.iter()
+			.find(|s| s.content.as_ref() == "other content");
 		assert!(other.is_some());
 		assert_eq!(
 			other.unwrap().style.fg,

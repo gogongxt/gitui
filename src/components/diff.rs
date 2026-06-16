@@ -26,6 +26,7 @@ use ratatui::{
 	layout::{
 		Constraint, Direction as RatatuiDirection, Layout, Rect,
 	},
+	style::{Color, Style},
 	symbols,
 	text::{Line, Span},
 	widgets::{Block, Borders, Paragraph},
@@ -1398,13 +1399,34 @@ impl DiffComponent {
 			} else {
 				line.clone()
 			};
+			// Find the dominant bg color (by character count) of the
+			// original line. This is passed to pad_line_bg so that
+			// wrapped sub-lines use the correct bg for padding even
+			// when word-highlight spans are the only visible bg.
+			let mut bg_widths: HashMap<Color, usize> = HashMap::new();
+			for span in &trimmed_line.spans {
+				if let Some(bg) = span.style.bg {
+					*bg_widths.entry(bg).or_insert(0) +=
+						span.content.chars().count();
+				}
+			}
+			let dominant_bg = bg_widths
+				.into_iter()
+				.max_by_key(|(_, w)| *w)
+				.map(|(bg, _)| bg);
 			let wrapped = Self::wrap_line(&trimmed_line, panel_width);
 			for wline in wrapped {
+				let padded = Self::pad_line_bg(
+					wline,
+					panel_width,
+					false,
+					dominant_bg,
+				);
 				display_hunks
 					.push(hunk_map.get(idx).copied().unwrap_or(0));
 				display_positions
 					.push(pos_map.get(idx).copied().unwrap_or(None));
-				display_lines.push(wline);
+				display_lines.push(padded);
 			}
 		}
 
@@ -1811,47 +1833,115 @@ impl DiffComponent {
 
 	/// Pad a line's last span with spaces if it has a background color,
 	/// so the background extends to the full panel width.
+	///
+	/// `dominant_bg` is the bg color that covers the most characters in
+	/// the original (pre-wrap) line. When delta emits word-highlight
+	/// spans (gray bg) inside a deleted/added line (red/green bg),
+	/// the dominant bg should be used for padding, not the word-highlight.
+	///
+	/// When `is_sbs` is true, the line contains both left and right
+	/// panels from delta side-by-side output. We must not let bg/fg
+	/// from the left panel bleed into the right panel.
 	fn pad_line_bg(
 		mut line: Line<'static>,
 		width: usize,
+		is_sbs: bool,
+		dominant_bg: Option<Color>,
 	) -> Line<'static> {
 		let content_width: usize = line
 			.spans
 			.iter()
 			.map(|s| s.content.chars().count())
 			.sum();
-		// Delta output ends with a reset span (\x1b[0m) after the background
-		// color spans, so we scan backwards to find the last span with a bg.
 		let bg_idx =
 			line.spans.iter().rposition(|s| s.style.bg.is_some());
 		let Some(idx) = bg_idx else {
 			return line;
 		};
-		let bg_style = line.spans[idx].style;
-		// Find the fg from any bg span (normalize_line_fg in ansi.rs has
-		// already filled bg spans that were missing fg, so this picks up
-		// the correct content color to apply to trailing no-bg spans like
-		// the → / ↵ markers that delta emits without a background).
+		// Determine the bg style to use for padding and trailing spans.
+		// Prefer the dominant bg from the original line (passed in),
+		// which correctly handles word-highlight spans (gray bg inside
+		// red/green bg lines). When dominant_bg is set but not present
+		// on this sub-line (e.g. after wrap), use it directly.
+		// Otherwise fall back to the last bg span's style.
+		let bg_style = if let Some(dom) = dominant_bg {
+			if let Some(s) = line.spans[..=idx]
+				.iter()
+				.find(|s| s.style.bg == Some(dom))
+			{
+				s.style
+			} else {
+				// dominant bg not on this sub-line — use it with the
+				// inherited fg from the line's bg spans (if any)
+				let fg = line.spans[..=idx]
+					.iter()
+					.rev()
+					.find(|s| {
+						s.style.bg.is_some() && s.style.fg.is_some()
+					})
+					.and_then(|s| s.style.fg);
+				let mut s = Style::default().bg(dom);
+				if let Some(fg) = fg {
+					s = s.fg(fg);
+				}
+				s
+			}
+		} else {
+			line.spans[idx].style
+		};
 		let inherited_fg = line.spans[..=idx]
 			.iter()
 			.rev()
 			.find(|s| s.style.bg.is_some() && s.style.fg.is_some())
 			.and_then(|s| s.style.fg);
-		// Apply bg (and fg) to any trailing spans that lost their background.
-		for span in &mut line.spans[idx + 1..] {
+
+		// In SBS mode, find the panel boundary after the last bg span.
+		let boundary = if is_sbs {
+			line.spans[idx + 1..]
+				.iter()
+				.position(|s| {
+					s.style.bg.is_none()
+						&& (matches!(
+							s.style.fg,
+							Some(Color::Indexed(_))
+						) || s.style.fg == Some(Color::Blue)
+							|| s.content
+								.chars()
+								.any(|c| c == '\u{2502}'))
+				})
+				.map(|p| idx + 1 + p)
+		} else {
+			None
+		};
+
+		let apply_end = boundary.unwrap_or(line.spans.len());
+		for span in &mut line.spans[idx + 1..apply_end] {
 			span.style =
 				span.style.bg(bg_style.bg.expect("checked above"));
 			if let Some(fg) = inherited_fg {
 				span.style = span.style.fg(fg);
 			}
 		}
-		// Append padding spaces if the line is shorter than the panel width.
-		if content_width < width {
-			let pad = width - content_width;
-			line.spans.push(Span::styled(
-				Cow::Owned(" ".repeat(pad)),
-				bg_style,
-			));
+		let pad_limit = if is_sbs {
+			boundary.map_or(content_width, |b| {
+				line.spans[..b]
+					.iter()
+					.map(|s| s.content.chars().count())
+					.sum()
+			})
+		} else {
+			width
+		};
+		let left_panel_width: usize = line.spans[..apply_end]
+			.iter()
+			.map(|s| s.content.chars().count())
+			.sum();
+		if left_panel_width < pad_limit {
+			let pad = pad_limit - left_panel_width;
+			line.spans.insert(
+				apply_end,
+				Span::styled(Cow::Owned(" ".repeat(pad)), bg_style),
+			);
 		}
 		line
 	}
@@ -1880,8 +1970,21 @@ impl DiffComponent {
 				.take(usize::from(height))
 				.enumerate()
 				.map(|(i, line)| {
-					let mut line =
-						Self::pad_line_bg(line.clone(), panel_width);
+					let mut line = {
+						let is_sbs = self.diff_mode
+							== DiffMode::DeltaSideBySide;
+						if is_sbs {
+							Self::pad_line_bg(
+								line.clone(),
+								panel_width,
+								true,
+								None,
+							)
+						} else {
+							// Already padded by rebuild_display_lines with dominant bg
+							line.clone()
+						}
+					};
 					if i == cursor {
 						for span in &mut line.spans {
 							span.style = sel_style;
@@ -2768,7 +2871,8 @@ mod tests {
 			Span::styled(Cow::Owned("hello".to_string()), bg_style),
 			Span::styled(Cow::Owned("".to_string()), reset_style),
 		]);
-		let padded = DiffComponent::pad_line_bg(line, 10);
+		let padded =
+			DiffComponent::pad_line_bg(line, 10, false, None);
 		let total_width: usize = padded
 			.spans
 			.iter()
@@ -2811,8 +2915,12 @@ mod tests {
 				.iter()
 				.map(|s| s.content.chars().count())
 				.sum();
-			let padded =
-				DiffComponent::pad_line_bg(subline.clone(), 80);
+			let padded = DiffComponent::pad_line_bg(
+				subline.clone(),
+				80,
+				false,
+				None,
+			);
 			let pw: usize = padded
 				.spans
 				.iter()
@@ -2850,7 +2958,8 @@ mod tests {
 			),
 			Span::styled(Cow::Owned("→".to_string()), reset_style),
 		]);
-		let padded = DiffComponent::pad_line_bg(line, 10);
+		let padded =
+			DiffComponent::pad_line_bg(line, 10, false, None);
 		let arrow =
 			padded.spans.iter().find(|s| s.content.as_ref() == "→");
 		assert!(arrow.is_some(), "should have → span");
@@ -2859,5 +2968,335 @@ mod tests {
 			Some(Color::Green),
 			"→ span should have bg applied"
 		);
+	}
+
+	#[test]
+	fn test_pad_line_bg_sbs_no_bleed_across_panels() {
+		// Manually constructed SBS line matching real ansi_to_lines output.
+		// ansi_to_lines parses \x1b[34m as Color::Blue (not Indexed(34)),
+		// and the last_bg_fg mechanism can overwrite the │ span's fg to rgb.
+		let red_bg = Style::default()
+			.bg(Color::Rgb(74, 46, 50))
+			.fg(Color::Rgb(231, 130, 132));
+		let blue_gutter = Style::default().fg(Color::Blue);
+		let reset = Style::default();
+		let line = Line::from(vec![
+			// Left panel gutter
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				blue_gutter,
+			),
+			Span::styled(
+				Cow::Owned("  1 ".to_string()),
+				Style::default().fg(Color::Indexed(88)),
+			),
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				blue_gutter,
+			),
+			// Left panel content with red bg
+			Span::styled(
+				Cow::Owned("deleted content".to_string()),
+				red_bg,
+			),
+			// Reset span (from \x1b[0m)
+			Span::styled(Cow::Owned("".to_string()), reset),
+			// Middle separator │ (may have fg overwritten by last_bg_fg)
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				Style::default().fg(Color::Rgb(231, 130, 132)),
+			),
+			// Right panel gutter
+			Span::styled(
+				Cow::Owned("    ".to_string()),
+				Style::default().fg(Color::Indexed(28)),
+			),
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				blue_gutter,
+			),
+		]);
+		let padded =
+			DiffComponent::pad_line_bg(line.clone(), 80, true, None);
+		// No gutter/decoration span should have left panel's red bg
+		for span in &padded.spans {
+			if span.style.bg.is_none()
+				|| matches!(
+					span.style.bg,
+					Some(Color::Rgb(74, 46, 50))
+				) {
+				// Check │ characters
+				if span.content.chars().any(|c| c == '\u{2502}') {
+					assert_ne!(
+						span.style.bg,
+						Some(Color::Rgb(74, 46, 50)),
+						"│ gutter should not have left panel bg"
+					);
+				}
+				// Check indexed-fg spans (line numbers)
+				if matches!(span.style.fg, Some(Color::Indexed(_))) {
+					assert_ne!(
+						span.style.bg,
+						Some(Color::Rgb(74, 46, 50)),
+						"indexed-fg span should not have left panel bg"
+					);
+				}
+				// Check Blue-fg spans (│ gutter)
+				if span.style.fg == Some(Color::Blue) {
+					assert_ne!(
+						span.style.bg,
+						Some(Color::Rgb(74, 46, 50)),
+						"blue-fg │ should not have left panel bg"
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn test_pad_line_bg_sbs_right_panel_pads_independently() {
+		// SBS delta line: left panel empty, right panel has green bg.
+		// The right panel should be padded with its own bg color.
+		let blue_gutter = Style::default().fg(Color::Indexed(34));
+		let green_bg = Style::default()
+			.bg(Color::Rgb(73, 111, 74))
+			.fg(Color::Rgb(198, 208, 245));
+		let reset = Style::default();
+		let line = Line::from(vec![
+			// Left panel gutter + empty content
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				blue_gutter,
+			),
+			Span::styled(
+				Cow::Owned("    ".to_string()),
+				Style::default().fg(Color::Indexed(88)),
+			),
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				blue_gutter,
+			),
+			Span::styled(
+				Cow::Owned(
+					"                                  ".to_string(),
+				),
+				reset,
+			),
+			// Right panel gutter
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				blue_gutter,
+			),
+			Span::styled(
+				Cow::Owned("  1 ".to_string()),
+				Style::default().fg(Color::Indexed(28)),
+			),
+			Span::styled(
+				Cow::Owned("\u{2502}".to_string()),
+				blue_gutter,
+			),
+			// Right panel content with green bg
+			Span::styled(
+				Cow::Owned("added content".to_string()),
+				green_bg,
+			),
+		]);
+		let padded =
+			DiffComponent::pad_line_bg(line.clone(), 80, true, None);
+		// The last bg span should be green
+		let last_bg_span = padded
+			.spans
+			.iter()
+			.find(|s| s.style.bg == Some(Color::Rgb(73, 111, 74)));
+		assert!(
+			last_bg_span.is_some(),
+			"should have green bg content"
+		);
+		// Padding should be green, not from left panel
+		if let Some(pad_span) = padded.spans.last() {
+			if pad_span.content.chars().all(|c| c == ' ')
+				&& !pad_span.content.is_empty()
+			{
+				assert_eq!(
+					pad_span.style.bg,
+					Some(Color::Rgb(73, 111, 74)),
+					"padding should have green bg from right panel"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn test_pad_line_bg_sbs_gutter_not_affected() {
+		// Parse real delta SBS output where left has deleted content,
+		// right has only gutter (│    │). After ansi_to_lines, the blue
+		// │ characters are merged into adjacent spans, leaving only
+		// indexed-color spans with no bg as gutter markers.
+		let input = concat!(
+			"\x1b[34m\x1b[38;5;88m  1 \x1b[34m\x1b[0m",
+			"\x1b[48;2;74;46;50;38;2;231;130;132mdeleted content\x1b[0m",
+			"\x1b[34m\x1b[38;5;28m    \x1b[34m\x1b[0m",
+			"\n",
+		);
+		let parsed = crate::ansi::ansi_to_lines(input);
+		assert_eq!(parsed.len(), 1);
+		let padded = DiffComponent::pad_line_bg(
+			parsed[0].clone(),
+			80,
+			true,
+			None,
+		);
+		// No span with indexed fg should have left panel's red bg
+		for span in &padded.spans {
+			if matches!(span.style.fg, Some(Color::Indexed(_))) {
+				assert_ne!(
+					span.style.bg,
+					Some(Color::Rgb(74, 46, 50)),
+					"indexed-fg gutter span should not have left panel bg"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn test_pad_line_bg_sbs_piped_gutter_not_colored() {
+		// Parse real delta SBS output with │ gutter characters.
+		// Left has red bg content, right has only gutter (│    │).
+		// The │ between panels must not get the left panel's red bg.
+		let input = concat!(
+			"\x1b[34m\u{2502}\x1b[38;5;88m  1 \x1b[34m\u{2502}\x1b[0m",
+			"\x1b[48;2;74;46;50;38;2;231;130;132mdeleted content\x1b[0m",
+			"\x1b[34m\u{2502}\x1b[38;5;28m    \x1b[34m\u{2502}\x1b[0m",
+			"\n",
+		);
+		let parsed = crate::ansi::ansi_to_lines(input);
+		assert_eq!(parsed.len(), 1);
+		let padded = DiffComponent::pad_line_bg(
+			parsed[0].clone(),
+			80,
+			true,
+			None,
+		);
+		// Every │ span and every indexed-fg span must NOT have red bg
+		for span in &padded.spans {
+			if span.content.chars().any(|c| c == '\u{2502}') {
+				assert_ne!(
+					span.style.bg,
+					Some(Color::Rgb(74, 46, 50)),
+					"│ gutter span must not have left panel bg"
+				);
+			}
+			if matches!(span.style.fg, Some(Color::Indexed(_))) {
+				assert_ne!(
+					span.style.bg,
+					Some(Color::Rgb(74, 46, 50)),
+					"indexed-fg gutter span must not have left panel bg"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn test_pad_line_bg_sbs_both_panels_with_bg() {
+		// Parse delta SBS output where both panels have bg content.
+		// Left panel: red bg (deleted), Right panel: green bg (added).
+		// Each panel should pad with its own bg color.
+		let input = concat!(
+			"\x1b[34m\u{2502}\x1b[38;5;88m  1 \x1b[34m\u{2502}\x1b[0m",
+			"\x1b[48;2;74;46;50;38;2;231;130;132mdeleted\x1b[0m",
+			"\x1b[34m\u{2502}\x1b[38;5;28m  1 \x1b[34m\u{2502}\x1b[0m",
+			"\x1b[48;2;73;111;74;38;2;198;208;245madded\x1b[0m",
+			"\n",
+		);
+		let parsed = crate::ansi::ansi_to_lines(input);
+		assert_eq!(parsed.len(), 1);
+		let padded = DiffComponent::pad_line_bg(
+			parsed[0].clone(),
+			80,
+			true,
+			None,
+		);
+		// Find the green bg span (right panel)
+		let green_bg = padded
+			.spans
+			.iter()
+			.find(|s| s.style.bg == Some(Color::Rgb(73, 111, 74)));
+		assert!(green_bg.is_some(), "should have green bg content");
+		// Find the red bg span (left panel)
+		let red_bg = padded
+			.spans
+			.iter()
+			.find(|s| s.style.bg == Some(Color::Rgb(74, 46, 50)));
+		assert!(red_bg.is_some(), "should have red bg content");
+		// │ gutter spans must not have red bg
+		for span in &padded.spans {
+			if span.content.chars().any(|c| c == '\u{2502}') {
+				assert_ne!(
+					span.style.bg,
+					Some(Color::Rgb(74, 46, 50)),
+					"│ must not have left panel bg"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn test_pad_line_bg_sbs_arrow_still_gets_bg() {
+		// In non-SBS mode (or within a panel), the ↵ arrow after bg
+		// content should still receive the bg color. SBS boundary
+		// detection must not break this.
+		let bg_style = Style::default()
+			.bg(Color::Rgb(74, 46, 50))
+			.fg(Color::Rgb(231, 130, 132));
+		let reset = Style::default();
+		let line = Line::from(vec![
+			Span::styled(Cow::Owned("content".to_string()), bg_style),
+			Span::styled(Cow::Owned("\u{21b5}".to_string()), reset),
+		]);
+		// Non-SBS: arrow gets bg
+		let padded =
+			DiffComponent::pad_line_bg(line.clone(), 20, false, None);
+		let arrow = padded
+			.spans
+			.iter()
+			.find(|s| s.content.chars().any(|c| c == '\u{21b5}'));
+		assert!(arrow.is_some());
+		assert_eq!(
+			arrow.unwrap().style.bg,
+			Some(Color::Rgb(74, 46, 50)),
+			"↵ arrow should get bg in non-SBS mode"
+		);
+	}
+
+	#[test]
+	fn test_pad_line_bg_uses_dominant_bg_not_word_highlight() {
+		// A wrapped sub-line where only "ANGED" (word highlight gray bg)
+		// has bg. The dominant_bg from the original line (red) is passed
+		// explicitly. pad_line_bg should use red for padding.
+		let gray_bg = Style::default()
+			.bg(Color::Rgb(204, 204, 204))
+			.fg(Color::Rgb(255, 0, 0));
+		let line = Line::from(vec![
+			// Word highlight span (the only bg on this sub-line)
+			Span::styled(Cow::Owned("ANGED".to_string()), gray_bg),
+		]);
+		let padded = DiffComponent::pad_line_bg(
+			line,
+			35,
+			false,
+			Some(Color::Rgb(74, 46, 50)),
+		);
+		// Padding span should have red bg (dominant), not gray bg (word highlight)
+		for span in &padded.spans {
+			if span.content.chars().all(|c| c == ' ')
+				&& !span.content.is_empty()
+			{
+				assert_eq!(
+					span.style.bg,
+					Some(Color::Rgb(74, 46, 50)),
+					"padding should use dominant (red) bg, not word-highlight (gray) bg"
+				);
+			}
+		}
 	}
 }
