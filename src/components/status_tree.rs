@@ -9,13 +9,17 @@ use crate::{
 	app::Environment,
 	components::{CommandInfo, Component, EventState},
 	keys::{key_match, SharedKeyConfig},
-	popups::{BlameFileOpen, FileRevOpen},
+	popups::{BlameFileOpen, CopyPathPopup, FileRevOpen},
 	queue::{InternalEvent, NeedsUpdate, Queue, StackablePopupOpen},
 	strings::{self, order},
 	ui::{self, style::SharedTheme},
 };
 use anyhow::Result;
-use asyncgit::{hash, sync::CommitId, StatusItem, StatusItemType};
+use asyncgit::{
+	hash,
+	sync::{utils::repo_work_dir, CommitId, RepoPathRef},
+	StatusItem, StatusItemType,
+};
 use crossterm::event::Event;
 use ratatui::{layout::Rect, text::Span, Frame};
 use std::{borrow::Cow, cell::Cell, path::Path};
@@ -37,6 +41,8 @@ pub struct StatusTreeComponent {
 	scroll_top: Cell<usize>,
 	visible: bool,
 	revision: Option<CommitId>,
+	repo: RepoPathRef,
+	copy_path_popup: CopyPathPopup,
 }
 
 impl StatusTreeComponent {
@@ -55,6 +61,12 @@ impl StatusTreeComponent {
 			pending: true,
 			visible: false,
 			revision: None,
+			repo: env.repo.clone(),
+			copy_path_popup: CopyPathPopup::new(
+				env.queue.clone(),
+				env.theme.clone(),
+				env.key_config.clone(),
+			),
 		}
 	}
 
@@ -89,6 +101,42 @@ impl StatusTreeComponent {
 				None
 			}
 		})
+	}
+
+	/// Returns the full path of the selected item, including any
+	/// folders folded up into it (e.g. "abc/def" instead of just "abc")
+	pub fn selection_folded_path(&self) -> Option<String> {
+		let item = self.tree.selected_item()?;
+		let mut path = item.info.full_path.clone();
+
+		if matches!(item.kind, FileTreeItemKind::File(_)) {
+			return Some(path);
+		}
+
+		let selection_idx = self.tree.selection?;
+		let tree_items = self.tree.tree.items();
+		let mut idx = selection_idx;
+
+		while idx < tree_items.len().saturating_sub(1)
+			&& tree_items[idx].info.indent
+				< tree_items[idx + 1].info.indent
+		{
+			idx += 1;
+
+			// don't fold files up
+			if let FileTreeItemKind::File(_) = &tree_items[idx].kind {
+				break;
+			}
+
+			// don't fold up if more than one folder in folder
+			if self.tree.tree.multiple_items_at_path(idx) {
+				break;
+			}
+
+			path += &format!("/{}", tree_items[idx].info.path);
+		}
+
+		Some(path)
 	}
 
 	///
@@ -296,10 +344,19 @@ impl StatusTreeComponent {
 		)
 	}
 
-	// Copy the real path of selected file to clickboard
-	fn copy_file_path(&self) {
-		if let Some(item) = self.selection() {
-			if crate::clipboard::copy_string(&item.info.full_path)
+	fn open_copy_path_popup(&mut self) {
+		if let Some(relative_path) = self.selection_folded_path() {
+			let absolute_path =
+				match repo_work_dir(&self.repo.borrow()) {
+					Ok(work_dir) => Path::new(&work_dir)
+						.join(&relative_path)
+						.to_string_lossy()
+						.into_owned(),
+					Err(_) => relative_path.clone(),
+				};
+			if self
+				.copy_path_popup
+				.open(relative_path, absolute_path)
 				.is_err()
 			{
 				self.queue.push(InternalEvent::ShowErrorMsg(
@@ -326,6 +383,10 @@ impl StatusTreeComponent {
 			}
 			_ => {}
 		}
+	}
+
+	pub fn draw_popup(&self, f: &mut Frame) -> Result<()> {
+		self.copy_path_popup.draw(f, f.area())
 	}
 }
 
@@ -403,7 +464,6 @@ impl DrawableComponent for StatusTreeComponent {
 				&self.theme,
 			);
 		}
-
 		Ok(())
 	}
 }
@@ -468,10 +528,17 @@ impl Component for StatusTreeComponent {
 			.order(order::RARE_ACTION),
 		);
 
+		if self.copy_path_popup.is_visible() {
+			return self.copy_path_popup.commands(out, force_all);
+		}
 		CommandBlocking::PassingOn
 	}
 
 	fn event(&mut self, ev: &Event) -> Result<EventState> {
+		if self.copy_path_popup.is_visible() {
+			return self.copy_path_popup.event(ev);
+		}
+
 		if self.focused {
 			if let Event::Key(e) = ev {
 				return if key_match(e, self.key_config.keys.blame) {
@@ -515,8 +582,10 @@ impl Component for StatusTreeComponent {
 						);
 					}
 					Ok(EventState::Consumed)
-				} else if key_match(e, self.key_config.keys.copy) {
-					self.copy_file_path();
+				} else if key_match(e, self.key_config.keys.copy)
+					|| key_match(e, self.key_config.keys.copy_path)
+				{
+					self.open_copy_path_popup();
 					Ok(EventState::Consumed)
 				} else if key_match(e, self.key_config.keys.move_down)
 				{

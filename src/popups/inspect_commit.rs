@@ -91,6 +91,7 @@ impl DrawableComponent for InspectCommitPopup {
 
 			self.details.draw(f, chunks[0])?;
 			self.diff.draw(f, chunks[1])?;
+			self.details.files().draw_popup(f)?;
 		}
 
 		Ok(())

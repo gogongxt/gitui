@@ -415,6 +415,7 @@ impl DrawableComponent for Reflog {
 
 				self.draw_table(f, chunks[0]);
 				self.commit_details.draw(f, chunks[1])?;
+				self.commit_details.files().draw_popup(f)?;
 			} else {
 				self.draw_table(f, area);
 			}

@@ -440,6 +440,7 @@ impl DrawableComponent for Revlog {
 		if self.commit_details.is_visible() {
 			self.list.draw(f, chunks[0])?;
 			self.commit_details.draw(f, chunks[1])?;
+			self.commit_details.files().draw_popup(f)?;
 		} else {
 			self.list.draw(f, area[0])?;
 		}

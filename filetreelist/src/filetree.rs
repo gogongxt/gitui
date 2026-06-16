@@ -106,6 +106,12 @@ impl FileTree {
 		})
 	}
 
+	/// Returns the selected item (file or folder)
+	pub fn selected_item(&self) -> Option<&TreeItemInfo> {
+		self.selection
+			.map(|index| self.items.tree_items[index].info())
+	}
+
 	///
 	pub fn collapse_recursive(&mut self) {
 		if let Some(selection) = self.selection {

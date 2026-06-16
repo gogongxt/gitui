@@ -150,6 +150,8 @@ impl DrawableComponent for Status {
 			self.draw_repo_state(f, rects[1]);
 		}
 
+		self.index_wd.draw_popup(f)?;
+		self.index.draw_popup(f)?;
 		Ok(())
 	}
 }

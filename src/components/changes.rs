@@ -76,6 +76,11 @@ impl ChangesComponent {
 		self.files.is_file_selected()
 	}
 
+	///
+	pub fn draw_popup(&self, f: &mut Frame) -> Result<()> {
+		self.files.draw_popup(f)
+	}
+
 	fn index_add_remove(&self) -> Result<bool> {
 		if let Some(tree_item) = self.selection() {
 			if self.is_working_dir {

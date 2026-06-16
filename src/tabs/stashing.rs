@@ -163,6 +163,7 @@ impl DrawableComponent for Stashing {
 
 		self.index.draw(f, chunks[0])?;
 
+		self.index.draw_popup(f)?;
 		Ok(())
 	}
 }

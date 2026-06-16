@@ -37,6 +37,7 @@ pub static POPUP_TITLE_LOG_SEARCH: &str = "Search";
 
 pub static POPUP_FAIL_COPY: &str = "Failed to copy text";
 pub static POPUP_SUCCESS_COPY: &str = "Copied Text";
+pub static POPUP_TITLE_COPY_PATH: &str = "Copy Path";
 pub static POPUP_COMMIT_SHA_INVALID: &str = "Invalid commit sha";
 
 pub mod symbol {
@@ -693,6 +694,31 @@ pub mod commands {
 			),
 			"copy selected file path to clipboard",
 			CMD_GROUP_LOG,
+		)
+	}
+	pub fn copy_path_confirm(
+		key_config: &SharedKeyConfig,
+	) -> CommandText {
+		CommandText::new(
+			format!(
+				"Confirm [{}]",
+				key_config.get_hint(key_config.keys.enter),
+			),
+			"confirm copy path selection",
+			CMD_GROUP_GENERAL,
+		)
+	}
+	pub fn copy_path_type(
+		key_config: &SharedKeyConfig,
+	) -> CommandText {
+		CommandText::new(
+			format!(
+				"Switch Type [{}/{}]",
+				key_config.get_hint(key_config.keys.move_up),
+				key_config.get_hint(key_config.keys.move_down),
+			),
+			"switch between relative and absolute path",
+			CMD_GROUP_GENERAL,
 		)
 	}
 	pub fn push_tags(key_config: &SharedKeyConfig) -> CommandText {

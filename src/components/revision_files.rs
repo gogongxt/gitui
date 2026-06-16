@@ -7,10 +7,9 @@ use crate::{
 	app::Environment,
 	keys::{key_match, SharedKeyConfig},
 	options::SharedOptions,
-	popups::{BlameFileOpen, FileRevOpen},
+	popups::{BlameFileOpen, CopyPathPopup, FileRevOpen},
 	queue::{InternalEvent, Queue, StackablePopupOpen},
 	strings::{self, order, symbol},
-	try_or_popup,
 	ui::{self, common_nav, style::SharedTheme},
 	AsyncNotification,
 };
@@ -18,7 +17,8 @@ use anyhow::Result;
 use asyncgit::{
 	asyncjob::AsyncSingleJob,
 	sync::{
-		get_commit_info, CommitId, CommitInfo, RepoPathRef, TreeFile,
+		get_commit_info, utils::repo_work_dir, CommitId, CommitInfo,
+		RepoPathRef, TreeFile,
 	},
 	AsyncGitNotification, AsyncTreeFilesJob,
 };
@@ -59,6 +59,7 @@ pub struct RevisionFilesComponent {
 	key_config: SharedKeyConfig,
 	select_file: Option<PathBuf>,
 	options: SharedOptions,
+	copy_path_popup: CopyPathPopup,
 }
 
 impl RevisionFilesComponent {
@@ -84,6 +85,11 @@ impl RevisionFilesComponent {
 			select_file,
 			visible: false,
 			options: env.options.clone(),
+			copy_path_popup: CopyPathPopup::new(
+				env.queue.clone(),
+				env.theme.clone(),
+				env.key_config.clone(),
+			),
 		}
 	}
 
@@ -268,6 +274,37 @@ impl RevisionFilesComponent {
 		})
 	}
 
+	fn selected_item_path(&self) -> Option<String> {
+		self.tree.selected_item().map(|item| {
+			item.full_path_str()
+				.strip_prefix("./")
+				.unwrap_or_default()
+				.to_string()
+		})
+	}
+
+	fn open_copy_path_popup(&mut self) {
+		if let Some(relative_path) = self.selected_item_path() {
+			let absolute_path =
+				match repo_work_dir(&self.repo.borrow()) {
+					Ok(work_dir) => Path::new(&work_dir)
+						.join(&relative_path)
+						.to_string_lossy()
+						.into_owned(),
+					Err(_) => relative_path.clone(),
+				};
+			if self
+				.copy_path_popup
+				.open(relative_path, absolute_path)
+				.is_err()
+			{
+				self.queue.push(InternalEvent::ShowErrorMsg(
+					strings::POPUP_FAIL_COPY.to_string(),
+				));
+			}
+		}
+	}
+
 	fn selection_changed(&mut self) {
 		//TODO: retrieve TreeFile from tree datastructure
 		if let Some(file) = self.selected_file_path_with_prefix() {
@@ -419,6 +456,8 @@ impl DrawableComponent for RevisionFilesComponent {
 
 			self.current_file.draw(f, chunks[1])?;
 		}
+
+		self.copy_path_popup.draw(f, area)?;
 		Ok(())
 	}
 }
@@ -454,7 +493,7 @@ impl Component for RevisionFilesComponent {
 					strings::commands::open_file_history(
 						&self.key_config,
 					),
-					self.tree.selected_file().is_some(),
+					self.tree.selected_item().is_some(),
 					true,
 				)
 				.order(order::RARE_ACTION),
@@ -472,6 +511,10 @@ impl Component for RevisionFilesComponent {
 			self.current_file.commands(out, force_all);
 		}
 
+		if self.copy_path_popup.is_visible() {
+			return self.copy_path_popup.commands(out, force_all);
+		}
+
 		CommandBlocking::PassingOn
 	}
 
@@ -479,6 +522,10 @@ impl Component for RevisionFilesComponent {
 		&mut self,
 		event: &crossterm::event::Event,
 	) -> Result<EventState> {
+		if self.copy_path_popup.is_visible() {
+			return self.copy_path_popup.event(event);
+		}
+
 		if !self.is_visible() {
 			return Ok(EventState::NotConsumed);
 		}
@@ -535,14 +582,10 @@ impl Component for RevisionFilesComponent {
 					);
 					return Ok(EventState::Consumed);
 				}
-			} else if key_match(key, self.key_config.keys.copy) {
-				if let Some(file) = self.selected_file_path() {
-					try_or_popup!(
-						self,
-						strings::POPUP_FAIL_COPY,
-						crate::clipboard::copy_string(&file)
-					);
-				}
+			} else if key_match(key, self.key_config.keys.copy)
+				|| key_match(key, self.key_config.keys.copy_path)
+			{
+				self.open_copy_path_popup();
 				return Ok(EventState::Consumed);
 			} else if !is_tree_focused {
 				return self.current_file.event(event);
