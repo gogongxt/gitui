@@ -36,8 +36,20 @@ fn normalize_line_fg(
 }
 
 /// Convert ANSI-colored text into ratatui `Line`s.
-pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
+///
+/// Returns `(lines, line_level_bgs)` where `line_level_bgs[i]` is the
+/// line-level background color for `lines[i]`. This is the bg color
+/// that delta intends for the *entire* line (red for deletions, green
+/// for additions), as opposed to transient word-diff highlight bgs.
+///
+/// Detection heuristic: delta always clears word-diff highlights before
+/// a line ends. The last bg color actively set before each newline (or
+/// end-of-input) is the line-level bg.
+pub fn ansi_to_lines(
+	input: &str,
+) -> (Vec<Line<'static>>, Vec<Option<Color>>) {
 	let mut lines: Vec<Line<'static>> = Vec::new();
+	let mut lines_level_bg: Vec<Option<Color>> = Vec::new();
 	let mut current_style = Style::default();
 	let mut current_spans: Vec<Span<'static>> = Vec::new();
 	let mut buf = String::new();
@@ -47,6 +59,11 @@ pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 	// track rgb fg — std/indexed colors (like the blue gutter `│`) are
 	// decorations, not content colors.
 	let mut last_bg_fg: Option<Color> = None;
+	// Track the last bg color that was actively set (not reset). At each
+	// line boundary this becomes the line-level bg for that line. We do
+	// NOT update this on reset — so it retains the line-level bg through
+	// word-diff overlays and the final \x1b[0m.
+	let mut last_bg_set: Option<Color> = None;
 	let mut chars = input.chars().peekable();
 
 	while let Some(c) = chars.next() {
@@ -77,6 +94,15 @@ pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 				// Only process SGR sequences (ending with 'm')
 				if final_char == Some('m') && !params.is_empty() {
 					current_style = apply_sgr(current_style, &params);
+					// Track the last real bg color that was set.
+					// On reset (code 0) or bg-reset (code 49), bg
+					// becomes Reset/None — we do NOT update last_bg_set,
+					// so it retains the previous line-level bg.
+					if let Some(bg) = current_style.bg {
+						if bg != Color::Reset {
+							last_bg_set = Some(bg);
+						}
+					}
 					// Delta sometimes resets styles mid-line and restores bg
 					// but not fg. Track the last fg seen while bg was active,
 					// and re-apply it when bg comes back without an explicit fg.
@@ -134,6 +160,8 @@ pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 				// Line with no bg content (separator/header): clear fg memory.
 				last_bg_fg = None;
 			}
+			lines_level_bg.push(last_bg_set);
+			last_bg_set = None;
 			lines
 				.push(Line::from(std::mem::take(&mut current_spans)));
 		} else if c == '\r' {
@@ -150,10 +178,11 @@ pub fn ansi_to_lines(input: &str) -> Vec<Line<'static>> {
 	}
 	if !current_spans.is_empty() {
 		normalize_line_fg(&mut current_spans, last_bg_fg);
+		lines_level_bg.push(last_bg_set);
 		lines.push(Line::from(current_spans));
 	}
 
-	lines
+	(lines, lines_level_bg)
 }
 
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
@@ -277,7 +306,7 @@ mod tests {
 
 	#[test]
 	fn test_plain_text() {
-		let lines = ansi_to_lines("hello world");
+		let (lines, _) = ansi_to_lines("hello world");
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		assert_eq!(spans.len(), 1);
@@ -286,7 +315,7 @@ mod tests {
 
 	#[test]
 	fn test_multiline() {
-		let lines = ansi_to_lines("line1\nline2\nline3");
+		let (lines, _) = ansi_to_lines("line1\nline2\nline3");
 		assert_eq!(lines.len(), 3);
 		assert_eq!(lines[0].spans[0].content.as_ref(), "line1");
 		assert_eq!(lines[1].spans[0].content.as_ref(), "line2");
@@ -296,7 +325,7 @@ mod tests {
 	#[test]
 	fn test_sgr_color() {
 		// Red foreground
-		let lines = ansi_to_lines("\x1b[31mred\x1b[0m");
+		let (lines, _) = ansi_to_lines("\x1b[31mred\x1b[0m");
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		assert_eq!(spans.len(), 1);
@@ -307,7 +336,8 @@ mod tests {
 	#[test]
 	fn test_sgr_rgb_color() {
 		// RGB foreground
-		let lines = ansi_to_lines("\x1b[38;2;200;100;50mrgb\x1b[0m");
+		let (lines, _) =
+			ansi_to_lines("\x1b[38;2;200;100;50mrgb\x1b[0m");
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		assert_eq!(spans.len(), 1);
@@ -318,7 +348,7 @@ mod tests {
 	#[test]
 	fn test_sgr_background() {
 		// Green background
-		let lines = ansi_to_lines("\x1b[42mgreen bg\x1b[0m");
+		let (lines, _) = ansi_to_lines("\x1b[42mgreen bg\x1b[0m");
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		assert_eq!(spans[0].style.bg, Some(Color::Green));
@@ -327,7 +357,7 @@ mod tests {
 	#[test]
 	fn test_erase_in_line_ignored() {
 		// \x1b[0K should be ignored (erase in line)
-		let lines =
+		let (lines, _) =
 			ansi_to_lines("\x1b[48;2;73;111;74m+\x1b[0m\x1b[48;2;73;111;74m\x1b[0K\x1b[0m");
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
@@ -351,7 +381,7 @@ mod tests {
 	fn test_delta_style_output() {
 		// Simulate real delta output
 		let input = "\x1b[48;2;73;111;74m+\x1b[38;2;202;158;230mmod\x1b[38;2;198;208;245m \x1b[38;2;239;159;118mansi\x1b[38;2;148;156;187m;\x1b[0m\x1b[48;2;73;111;74m\x1b[0K\x1b[0m";
-		let lines = ansi_to_lines(input);
+		let (lines, _) = ansi_to_lines(input);
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		// Should have multiple spans with different colors
@@ -372,7 +402,7 @@ mod tests {
 	#[test]
 	fn test_mixed_content_and_escapes() {
 		let input = "plain\x1b[1mbold\x1b[0mplain";
-		let lines = ansi_to_lines(input);
+		let (lines, _) = ansi_to_lines(input);
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		assert_eq!(spans.len(), 3);
@@ -416,7 +446,7 @@ mod tests {
 			if delta_output.status.success() {
 				let text =
 					String::from_utf8_lossy(&delta_output.stdout);
-				let lines = ansi_to_lines(&text);
+				let (lines, _) = ansi_to_lines(&text);
 				assert!(
 					!lines.is_empty(),
 					"delta output should produce at least one line"
@@ -443,7 +473,7 @@ mod tests {
 		// \x1b[48;2;0;40;0m                     → only bg restored
 		// second\x1b[0m
 		let input = "\x1b[48;2;0;40;0m\x1b[38;2;200;200;200mfirst\x1b[0m\x1b[48;2;0;40;0msecond\x1b[0m";
-		let lines = ansi_to_lines(input);
+		let (lines, _) = ansi_to_lines(input);
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		let first =
@@ -473,7 +503,7 @@ mod tests {
 		// \x1b[48;2;0;40;0;38;2;198;208;245mcontent\x1b[0m
 		// \x1b[48;2;0;40;0mnofg\x1b[0m
 		let input = "\x1b[48;2;0;40;0m\x1b[38;2;198;208;245mcontent\x1b[0m\x1b[48;2;0;40;0mnofg\x1b[0m";
-		let lines = ansi_to_lines(input);
+		let (lines, _) = ansi_to_lines(input);
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		let content =
@@ -503,7 +533,7 @@ mod tests {
 		// Since there is no rgb fg in any bg span, content keeps fg=None.
 		let input =
 			"\x1b[34m\u{2502}\x1b[0m\x1b[48;2;0;40;0mnofg\x1b[0m";
-		let lines = ansi_to_lines(input);
+		let (lines, _) = ansi_to_lines(input);
 		assert_eq!(lines.len(), 1);
 		let spans = &lines[0].spans;
 		let nofg =
@@ -529,7 +559,7 @@ mod tests {
 			"\x1b[48;2;0;40;0mpart two",
 			"\x1b[34m\u{21b5}\x1b[0m\n",
 		);
-		let lines = ansi_to_lines(input);
+		let (lines, _) = ansi_to_lines(input);
 		assert_eq!(lines.len(), 2);
 
 		let spans1 = &lines[0].spans;
@@ -569,7 +599,7 @@ mod tests {
 			"\x1b[48;2;0;40;0mother content",
 			"\x1b[34m\u{21b5}\x1b[0m\n",
 		);
-		let lines = ansi_to_lines(input);
+		let (lines, _) = ansi_to_lines(input);
 		assert_eq!(lines.len(), 3);
 
 		let spans3 = &lines[2].spans;
@@ -581,6 +611,95 @@ mod tests {
 			other.unwrap().style.fg,
 			None,
 			"fg should not leak past a separator line"
+		);
+	}
+
+	#[test]
+	fn test_line_level_bg_word_diff_mid_line() {
+		// Delta: line-level red bg, word-diff gray bg on changed word.
+		// After word-diff, delta restores line-level bg (red) before
+		// the final reset. The line-level bg should be detected as red.
+		let input = concat!(
+			"\x1b[48;2;74;46;50m", // line-level red bg
+			"hello ",
+			"\x1b[48;2;204;204;204m", // word-diff gray bg
+			"world",
+			"\x1b[48;2;74;46;50m", // restore line-level red bg
+			"  ",
+			"\x1b[0m\n", // reset + newline
+		);
+		let (lines, bgs) = ansi_to_lines(input);
+		assert_eq!(lines.len(), 1);
+		assert_eq!(bgs.len(), 1);
+		// Line-level bg should be red (the last real bg set before end-of-line)
+		assert_eq!(
+			bgs[0],
+			Some(Color::Rgb(74, 46, 50)),
+			"line-level bg should be red, not word-diff gray"
+		);
+	}
+
+	#[test]
+	fn test_line_level_bg_word_diff_at_start() {
+		// Delta: word-diff gray bg at start, then line-level red bg
+		// The line-level bg should be detected as red.
+		let input = concat!(
+			"\x1b[48;2;204;204;204m", // word-diff gray bg (first word changed)
+			"hello",
+			"\x1b[48;2;74;46;50m", // line-level red bg
+			" world",
+			"\x1b[0m\n",
+		);
+		let (lines, bgs) = ansi_to_lines(input);
+		assert_eq!(lines.len(), 1);
+		assert_eq!(
+			bgs[0],
+			Some(Color::Rgb(74, 46, 50)),
+			"line-level bg should be red even when word-diff appears first"
+		);
+	}
+
+	#[test]
+	fn test_line_level_bg_no_bg() {
+		// Line with no bg (separator/header) should have None
+		let input = "\x1b[34m---\x1b[0m\n";
+		let (lines, bgs) = ansi_to_lines(input);
+		assert_eq!(lines.len(), 1);
+		assert_eq!(bgs[0], None, "separator line should have no bg");
+	}
+
+	#[test]
+	fn test_line_level_bg_multiple_lines() {
+		// Two lines: first with red bg, second with green bg
+		let input = concat!(
+			"\x1b[48;2;74;46;50mdeleted\x1b[0m\n",
+			"\x1b[48;2;73;111;74madded\x1b[0m\n",
+		);
+		let (lines, bgs) = ansi_to_lines(input);
+		assert_eq!(lines.len(), 2);
+		assert_eq!(bgs.len(), 2);
+		assert_eq!(bgs[0], Some(Color::Rgb(74, 46, 50)));
+		assert_eq!(bgs[1], Some(Color::Rgb(73, 111, 74)));
+	}
+
+	#[test]
+	fn test_line_level_bg_with_erase_in_line() {
+		// Delta: content + \x1b[K] (erase-in-line) with line-level bg
+		let input = concat!(
+			"\x1b[48;2;73;111;74m",
+			"+",
+			"\x1b[38;2;202;158;230mmod",
+			"\x1b[0m",
+			"\x1b[48;2;73;111;74m",
+			"\x1b[0K", // erase-in-line
+			"\x1b[0m\n",
+		);
+		let (lines, bgs) = ansi_to_lines(input);
+		assert_eq!(lines.len(), 1);
+		assert_eq!(
+			bgs[0],
+			Some(Color::Rgb(73, 111, 74)),
+			"line-level bg should be green (from \x1b[K] region)"
 		);
 	}
 }

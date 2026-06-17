@@ -172,6 +172,7 @@ pub struct DiffComponent {
 	options: SharedOptions,
 	diff_mode: DiffMode,
 	delta_output: RefCell<Option<Vec<Line<'static>>>>,
+	delta_line_level_bgs: RefCell<Vec<Option<Color>>>,
 	delta_line_hunks: RefCell<Vec<usize>>,
 	delta_line_positions: RefCell<Vec<Option<DiffLinePosition>>>,
 	last_delta_width: Cell<u16>,
@@ -200,6 +201,7 @@ impl DiffComponent {
 			options: env.options.clone(),
 			diff_mode: env.options.borrow().diff_mode(),
 			delta_output: RefCell::new(None),
+			delta_line_level_bgs: RefCell::new(Vec::new()),
 			delta_line_hunks: RefCell::new(Vec::new()),
 			delta_line_positions: RefCell::new(Vec::new()),
 			last_delta_width: Cell::new(0),
@@ -222,6 +224,7 @@ impl DiffComponent {
 		self.current = Current::default();
 		self.diff = None;
 		*self.delta_output.borrow_mut() = None;
+		self.delta_line_level_bgs.borrow_mut().clear();
 		self.delta_line_hunks.borrow_mut().clear();
 		self.delta_line_positions.borrow_mut().clear();
 		self.delta_display_lines.borrow_mut().clear();
@@ -1041,7 +1044,7 @@ impl DiffComponent {
 			.is_ok_and(|s| s.success())
 	}
 
-	/// Run `git diff | delta` and return parsed lines, or `None` on failure.
+	/// Run `git diff | delta` and return parsed lines with per-line bg, or `None` on failure.
 	#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 	fn run_delta_subprocess(
 		repo: &RepoPathRef,
@@ -1049,7 +1052,7 @@ impl DiffComponent {
 		diff_type: &DiffType,
 		width: u16,
 		side_by_side: bool,
-	) -> Option<Vec<Line<'static>>> {
+	) -> Option<(Vec<Line<'static>>, Vec<Option<Color>>)> {
 		if path.is_empty() {
 			return None;
 		}
@@ -1220,14 +1223,20 @@ impl DiffComponent {
 
 	/// Run delta and store the result
 	fn run_delta(&self) {
-		let output = Self::run_delta_subprocess(
+		let result = Self::run_delta_subprocess(
 			&self.repo,
 			&self.current.path,
 			&self.current.diff_type,
 			self.current_size.get().0,
 			self.diff_mode == DiffMode::DeltaSideBySide,
 		);
-		*self.delta_output.borrow_mut() = output;
+		if let Some((lines, bgs)) = result {
+			*self.delta_output.borrow_mut() = Some(lines);
+			*self.delta_line_level_bgs.borrow_mut() = bgs;
+		} else {
+			*self.delta_output.borrow_mut() = None;
+			self.delta_line_level_bgs.borrow_mut().clear();
+		}
 		self.rebuild_delta_maps();
 		self.last_delta_width.set(self.current_size.get().0);
 	}
@@ -1371,6 +1380,7 @@ impl DiffComponent {
 
 		let hunk_map = self.delta_line_hunks.borrow();
 		let pos_map = self.delta_line_positions.borrow();
+		let line_level_bgs = self.delta_line_level_bgs.borrow();
 
 		let mut display_lines = Vec::new();
 		let mut display_hunks = Vec::new();
@@ -1399,21 +1409,12 @@ impl DiffComponent {
 			} else {
 				line.clone()
 			};
-			// Find the dominant bg color (by character count) of the
-			// original line. This is passed to pad_line_bg so that
-			// wrapped sub-lines use the correct bg for padding even
-			// when word-highlight spans are the only visible bg.
-			let mut bg_widths: HashMap<Color, usize> = HashMap::new();
-			for span in &trimmed_line.spans {
-				if let Some(bg) = span.style.bg {
-					*bg_widths.entry(bg).or_insert(0) +=
-						span.content.chars().count();
-				}
-			}
-			let dominant_bg = bg_widths
-				.into_iter()
-				.max_by_key(|(_, w)| *w)
-				.map(|(bg, _)| bg);
+			// Use the line-level bg detected by the ANSI parser.
+			// This correctly distinguishes line-level bg (red/green)
+			// from word-diff highlight bg (gray), even when word-diff
+			// covers more characters than the line-level bg.
+			let dominant_bg =
+				line_level_bgs.get(idx).copied().flatten();
 			let wrapped = Self::wrap_line(&trimmed_line, panel_width);
 			for wline in wrapped {
 				let padded = Self::pad_line_bg(
@@ -1435,6 +1436,7 @@ impl DiffComponent {
 		drop(delta);
 		drop(hunk_map);
 		drop(pos_map);
+		drop(line_level_bgs);
 		*self.delta_line_hunks.borrow_mut() = display_hunks;
 		*self.delta_line_positions.borrow_mut() = display_positions;
 	}
@@ -1514,6 +1516,7 @@ impl DiffComponent {
 			self.run_delta();
 		} else {
 			*self.delta_output.borrow_mut() = None;
+			self.delta_line_level_bgs.borrow_mut().clear();
 			self.delta_line_hunks.borrow_mut().clear();
 			self.delta_line_positions.borrow_mut().clear();
 			self.delta_display_lines.borrow_mut().clear();
@@ -3138,7 +3141,7 @@ mod tests {
 			"\x1b[34m\x1b[38;5;28m    \x1b[34m\x1b[0m",
 			"\n",
 		);
-		let parsed = crate::ansi::ansi_to_lines(input);
+		let (parsed, _) = crate::ansi::ansi_to_lines(input);
 		assert_eq!(parsed.len(), 1);
 		let padded = DiffComponent::pad_line_bg(
 			parsed[0].clone(),
@@ -3169,7 +3172,7 @@ mod tests {
 			"\x1b[34m\u{2502}\x1b[38;5;28m    \x1b[34m\u{2502}\x1b[0m",
 			"\n",
 		);
-		let parsed = crate::ansi::ansi_to_lines(input);
+		let (parsed, _) = crate::ansi::ansi_to_lines(input);
 		assert_eq!(parsed.len(), 1);
 		let padded = DiffComponent::pad_line_bg(
 			parsed[0].clone(),
@@ -3208,7 +3211,7 @@ mod tests {
 			"\x1b[48;2;73;111;74;38;2;198;208;245madded\x1b[0m",
 			"\n",
 		);
-		let parsed = crate::ansi::ansi_to_lines(input);
+		let (parsed, _) = crate::ansi::ansi_to_lines(input);
 		assert_eq!(parsed.len(), 1);
 		let padded = DiffComponent::pad_line_bg(
 			parsed[0].clone(),
