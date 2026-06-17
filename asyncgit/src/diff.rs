@@ -82,8 +82,19 @@ impl AsyncDiff {
 	///
 	pub fn refresh(&self) -> Result<()> {
 		if let Ok(Some(param)) = self.get_last_param() {
-			self.clear_current()?;
-			self.request(param)?;
+			if self.is_pending() {
+				// A request with the same params is already in-flight.
+				// Do NOT clear the hash — that would invalidate the
+				// pending result and cause a livelock for large files
+				// where the diff takes long enough for a file-watcher
+				// notification to trigger another refresh() before the
+				// first one completes.
+				let mut current = self.current.lock()?;
+				current.1 = None;
+			} else {
+				self.clear_current()?;
+				self.request(param)?;
+			}
 		}
 		Ok(())
 	}

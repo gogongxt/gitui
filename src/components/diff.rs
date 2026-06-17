@@ -1196,16 +1196,21 @@ impl DiffComponent {
 				.stderr(std::process::Stdio::null())
 				.spawn()
 		{
-			if let Some(stdin) = child.stdin.take() {
-				use std::io::Write;
-				let mut stdin = stdin;
-				let _ = stdin.write_all(&git_output.stdout);
-			}
-			child
-				.wait_with_output()
-				.ok()
-				.filter(|o| o.status.success())
-				.map(|o| o.stdout)
+			// Write stdin in a separate thread to avoid deadlock:
+			// If delta's stdout pipe buffer fills up, delta blocks
+			// on write(stdout). If we're still blocking on
+			// write_all(stdin), we have a classic pipe deadlock.
+			let stdin_data = git_output.stdout;
+			let mut child_stdin = child.stdin.take();
+			let stdin_thread = std::thread::spawn(move || {
+				if let Some(ref mut stdin) = child_stdin {
+					use std::io::Write;
+					let _ = stdin.write_all(&stdin_data);
+				}
+			});
+			let output = child.wait_with_output().ok();
+			let _ = stdin_thread.join();
+			output.filter(|o| o.status.success()).map(|o| o.stdout)
 		} else {
 			log::error!("delta: failed to spawn delta process");
 			None
