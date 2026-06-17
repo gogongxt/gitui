@@ -182,7 +182,7 @@ impl CopyPathPopup {
 impl DrawableComponent for CopyPathPopup {
 	fn draw(&self, f: &mut Frame, _area: Rect) -> Result<()> {
 		if self.is_visible() {
-			const SIZE: (u16, u16) = (55, 7);
+			const SIZE: (u16, u16) = (80, 7);
 			let area =
 				ui::centered_rect_absolute(SIZE.0, SIZE.1, f.area());
 
