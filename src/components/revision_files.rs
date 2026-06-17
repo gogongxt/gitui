@@ -285,14 +285,16 @@ impl RevisionFilesComponent {
 
 	fn open_copy_path_popup(&mut self) {
 		if let Some(relative_path) = self.selected_item_path() {
-			let absolute_path =
-				match repo_work_dir(&self.repo.borrow()) {
-					Ok(work_dir) => Path::new(&work_dir)
-						.join(&relative_path)
-						.to_string_lossy()
-						.into_owned(),
-					Err(_) => relative_path.clone(),
-				};
+			let absolute_path = repo_work_dir(&self.repo.borrow())
+				.map_or_else(
+					|_| relative_path.clone(),
+					|work_dir| {
+						Path::new(&work_dir)
+							.join(&relative_path)
+							.to_string_lossy()
+							.into_owned()
+					},
+				);
 			if self
 				.copy_path_popup
 				.open(relative_path, absolute_path)

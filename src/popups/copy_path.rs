@@ -87,7 +87,7 @@ pub struct CopyPathPopup {
 }
 
 impl CopyPathPopup {
-	pub fn new(
+	pub const fn new(
 		queue: Queue,
 		theme: SharedTheme,
 		key_config: SharedKeyConfig,

@@ -28,8 +28,8 @@ pub fn stage_lines_untracked(
 	let file_content = load_file(&repo, file_path)?;
 	let file_content_bytes = file_content.as_bytes();
 
-	let path = Path::new(file_path);
-	let newfile_path = work_dir.join(path);
+	let file_rel_path = Path::new(file_path);
+	let newfile_path = work_dir.join(file_rel_path);
 
 	let patch = Patch::from_buffers(
 		&[],
@@ -41,7 +41,7 @@ pub fn stage_lines_untracked(
 
 	// Build set of selected line positions for fast lookup
 	let selected: HashSet<DiffLinePosition> =
-		lines.iter().cloned().collect();
+		lines.iter().copied().collect();
 
 	// For an untracked file, all diff lines are additions.
 	// Collect only the selected addition lines.
@@ -55,9 +55,7 @@ pub fn stage_lines_untracked(
 			if line.origin_value() == DiffLineType::Addition {
 				let pos = DiffLinePosition {
 					old_lineno: None,
-					new_lineno: line
-						.new_lineno()
-						.and_then(|n| u32::try_from(n).ok()),
+					new_lineno: line.new_lineno(),
 				};
 				if selected.contains(&pos) {
 					let content =
@@ -87,7 +85,7 @@ pub fn stage_lines_untracked(
 		mtime: git2::IndexTime::new(0, 0),
 		dev: 0,
 		ino: 0,
-		mode: 0o100644,
+		mode: 0o100_644,
 		uid: 0,
 		gid: 0,
 		file_size: u32::try_conv(selected_content.len())?,

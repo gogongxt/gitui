@@ -1367,7 +1367,7 @@ impl DiffComponent {
 			// Side-by-side: display lines = delta lines (no wrapping)
 			let delta = self.delta_output.borrow();
 			let lines =
-				delta.as_ref().map_or_else(Vec::new, |l| l.clone());
+				delta.as_ref().map_or_else(Vec::new, Clone::clone);
 			*self.delta_display_lines.borrow_mut() = lines;
 			return;
 		}
@@ -1803,13 +1803,13 @@ impl DiffComponent {
 
 				// Find byte offset after `space` characters
 				let mut byte_end = remaining.len();
-				let mut taken = 0;
-				for (i, _) in remaining.char_indices() {
-					if taken == space {
+				for (idx, (i, _)) in
+					remaining.char_indices().enumerate()
+				{
+					if idx == space {
 						byte_end = i;
 						break;
 					}
-					taken += 1;
 				}
 				current_spans.push(Span::styled(
 					Cow::Owned(remaining[..byte_end].to_string()),

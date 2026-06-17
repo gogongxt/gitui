@@ -45,6 +45,7 @@ fn normalize_line_fg(
 /// Detection heuristic: delta always clears word-diff highlights before
 /// a line ends. The last bg color actively set before each newline (or
 /// end-of-input) is the line-level bg.
+#[allow(clippy::cognitive_complexity)]
 pub fn ansi_to_lines(
 	input: &str,
 ) -> (Vec<Line<'static>>, Vec<Option<Color>>) {

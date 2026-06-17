@@ -22,6 +22,7 @@ use asyncgit::{
 };
 use crossterm::event::Event;
 use ratatui::{layout::Rect, text::Span, Frame};
+use std::fmt::Write;
 use std::{borrow::Cow, cell::Cell, path::Path};
 
 //TODO: use new `filetreelist` crate
@@ -133,7 +134,8 @@ impl StatusTreeComponent {
 				break;
 			}
 
-			path += &format!("/{}", tree_items[idx].info.path);
+			write!(path, "/{}", tree_items[idx].info.path)
+				.expect("writing to String cannot fail");
 		}
 
 		Some(path)
@@ -346,14 +348,16 @@ impl StatusTreeComponent {
 
 	fn open_copy_path_popup(&mut self) {
 		if let Some(relative_path) = self.selection_folded_path() {
-			let absolute_path =
-				match repo_work_dir(&self.repo.borrow()) {
-					Ok(work_dir) => Path::new(&work_dir)
-						.join(&relative_path)
-						.to_string_lossy()
-						.into_owned(),
-					Err(_) => relative_path.clone(),
-				};
+			let absolute_path = repo_work_dir(&self.repo.borrow())
+				.map_or_else(
+					|_| relative_path.clone(),
+					|work_dir| {
+						Path::new(&work_dir)
+							.join(&relative_path)
+							.to_string_lossy()
+							.into_owned()
+					},
+				);
 			if self
 				.copy_path_popup
 				.open(relative_path, absolute_path)
