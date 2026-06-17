@@ -968,7 +968,9 @@ impl App {
 			Action::Reset(r) => {
 				self.status_tab.reset(&r);
 			}
-			Action::StashDrop(_) | Action::StashPop(_) => {
+			Action::StashDrop(_)
+			| Action::StashPop(_)
+			| Action::StashApply(_) => {
 				if let Err(e) = self
 					.stashlist_tab
 					.action_confirmed(&self.repo.borrow(), &action)

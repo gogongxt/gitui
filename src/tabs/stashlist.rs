@@ -84,17 +84,9 @@ impl StashList {
 
 	fn apply_stash(&self) {
 		if let Some(e) = self.list.selected_entry() {
-			match sync::stash_apply(&self.repo.borrow(), e.id, false)
-			{
-				Ok(()) => {
-					self.queue.push(InternalEvent::TabSwitchStatus);
-				}
-				Err(e) => {
-					self.queue.push(InternalEvent::ShowErrorMsg(
-						format!("stash apply error:\n{e}"),
-					));
-				}
-			}
+			self.queue.push(InternalEvent::ConfirmAction(
+				Action::StashApply(e.id),
+			));
 		}
 	}
 
@@ -137,6 +129,7 @@ impl StashList {
 		match action {
 			Action::StashDrop(ids) => self.drop(repo, ids)?,
 			Action::StashPop(id) => self.pop(repo, *id)?,
+			Action::StashApply(id) => self.apply(repo, *id)?,
 			_ => (),
 		}
 
@@ -162,6 +155,16 @@ impl StashList {
 		sync::stash_pop(repo, id)?;
 
 		self.list.clear_marked();
+		self.update()?;
+
+		self.queue.push(InternalEvent::TabSwitchStatus);
+
+		Ok(())
+	}
+
+	fn apply(&mut self, repo: &RepoPath, id: CommitId) -> Result<()> {
+		sync::stash_apply(repo, id, false)?;
+
 		self.update()?;
 
 		self.queue.push(InternalEvent::TabSwitchStatus);

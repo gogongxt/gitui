@@ -167,6 +167,11 @@ pub fn confirm_title_stashpop(
 ) -> String {
 	"Pop".to_string()
 }
+pub fn confirm_title_stashapply(
+	_key_config: &SharedKeyConfig,
+) -> String {
+	"Apply".to_string()
+}
 pub fn confirm_title_merge(
 	_key_config: &SharedKeyConfig,
 	rebase: bool,
@@ -238,6 +243,12 @@ pub fn confirm_msg_stashdrop(
 pub fn confirm_msg_stashpop(_key_config: &SharedKeyConfig) -> String {
 	"The stash will be applied and removed from the stash list. Confirm stash pop?"
         .to_string()
+}
+pub fn confirm_msg_stashapply(
+	_key_config: &SharedKeyConfig,
+) -> String {
+	"The stash will be applied to the working directory. Confirm stash apply?"
+		.to_string()
 }
 pub fn confirm_msg_resethunk(
 	_key_config: &SharedKeyConfig,

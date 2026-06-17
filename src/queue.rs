@@ -47,6 +47,7 @@ pub enum Action {
 	ResetLines(String, Vec<DiffLinePosition>),
 	StashDrop(Vec<CommitId>),
 	StashPop(CommitId),
+	StashApply(CommitId),
 	DeleteLocalBranch(String),
 	DeleteRemoteBranch(String),
 	DeleteTag(String),
