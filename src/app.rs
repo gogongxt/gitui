@@ -434,6 +434,7 @@ impl App {
 			self.status_tab.update_git(ev)?;
 			self.stashing_tab.update_git(ev)?;
 			self.revlog.update_git(ev)?;
+			self.stashlist_tab.update_git(ev)?;
 			self.reflog_tab.update_git(ev)?;
 			self.file_revlog_popup.update_git(ev)?;
 			self.inspect_commit_popup.update_git(ev)?;

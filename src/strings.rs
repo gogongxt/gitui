@@ -1470,9 +1470,21 @@ pub mod commands {
 		CommandText::new(
 			format!(
 				"Pop [{}]",
-				key_config.get_hint(key_config.keys.enter),
+				key_config.get_hint(key_config.keys.stash_pop),
 			),
 			"pop selected stash",
+			CMD_GROUP_STASHES,
+		)
+	}
+	pub fn stashlist_details_toggle(
+		key_config: &SharedKeyConfig,
+	) -> CommandText {
+		CommandText::new(
+			format!(
+				"Details [{}]",
+				key_config.get_hint(key_config.keys.enter),
+			),
+			"open details of selected stash",
 			CMD_GROUP_STASHES,
 		)
 	}
@@ -1482,7 +1494,7 @@ pub mod commands {
 		CommandText::new(
 			format!(
 				"Inspect [{}]",
-				key_config.get_hint(key_config.keys.stash_open),
+				key_config.get_hint(key_config.keys.move_right),
 			),
 			"open stash commit details (allows to diff files)",
 			CMD_GROUP_STASHES,

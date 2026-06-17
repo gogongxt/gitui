@@ -2,23 +2,31 @@ use crate::{
 	app::Environment,
 	components::{
 		visibility_blocking, CommandBlocking, CommandInfo,
-		CommitList, Component, DrawableComponent, EventState,
+		CommitDetailsComponent, CommitList, Component,
+		DrawableComponent, EventState,
 	},
 	keys::{key_match, SharedKeyConfig},
+	options::SharedOptions,
 	popups::InspectCommitOpen,
 	queue::{Action, InternalEvent, Queue, StackablePopupOpen},
 	strings,
 };
 use anyhow::Result;
-use asyncgit::sync::{self, CommitId, RepoPath, RepoPathRef};
+use asyncgit::{
+	sync::{self, CommitId, RepoPath, RepoPathRef},
+	AsyncGitNotification, CommitFilesParams,
+};
 use crossterm::event::Event;
+use ratatui::layout::{Constraint, Direction, Layout};
 
 pub struct StashList {
 	repo: RepoPathRef,
 	list: CommitList,
+	commit_details: CommitDetailsComponent,
 	visible: bool,
 	queue: Queue,
 	key_config: SharedKeyConfig,
+	options: SharedOptions,
 }
 
 impl StashList {
@@ -30,9 +38,11 @@ impl StashList {
 				env,
 				&strings::stashlist_title(&env.key_config),
 			),
+			commit_details: CommitDetailsComponent::new(env),
 			queue: env.queue.clone(),
 			key_config: env.key_config.clone(),
 			repo: env.repo.clone(),
+			options: env.options.clone(),
 		}
 	}
 
@@ -41,9 +51,35 @@ impl StashList {
 		if self.is_visible() {
 			let stashes = sync::get_stashes(&self.repo.borrow())?;
 			self.list.set_commits(stashes.into_iter().collect());
+
+			if self.commit_details.is_visible() {
+				let commit = self.selected_commit();
+				self.commit_details.set_commits(
+					commit.map(CommitFilesParams::from),
+					None,
+				)?;
+			}
 		}
 
 		Ok(())
+	}
+
+	///
+	pub fn update_git(
+		&mut self,
+		ev: AsyncGitNotification,
+	) -> Result<()> {
+		if self.visible
+			&& matches!(ev, AsyncGitNotification::CommitFiles)
+		{
+			self.update()?;
+		}
+
+		Ok(())
+	}
+
+	fn selected_commit(&self) -> Option<CommitId> {
+		self.list.selected_entry().map(|e| e.id)
 	}
 
 	fn apply_stash(&self) {
@@ -140,7 +176,27 @@ impl DrawableComponent for StashList {
 		f: &mut ratatui::Frame,
 		rect: ratatui::layout::Rect,
 	) -> Result<()> {
-		self.list.draw(f, rect)?;
+		if self.commit_details.is_visible() {
+			let left_ratio = self.options.borrow().log_left_ratio();
+			let right_ratio = 100 - left_ratio;
+
+			let chunks = Layout::default()
+				.direction(Direction::Horizontal)
+				.constraints(
+					[
+						Constraint::Percentage(left_ratio),
+						Constraint::Percentage(right_ratio),
+					]
+					.as_ref(),
+				)
+				.split(rect);
+
+			self.list.draw(f, chunks[0])?;
+			self.commit_details.draw(f, chunks[1])?;
+			self.commit_details.files().draw_popup(f)?;
+		} else {
+			self.list.draw(f, rect)?;
+		}
 
 		Ok(())
 	}
@@ -176,11 +232,18 @@ impl Component for StashList {
 				true,
 			));
 			out.push(CommandInfo::new(
-				strings::commands::stashlist_inspect(
+				strings::commands::stashlist_details_toggle(
 					&self.key_config,
 				),
 				selection_valid,
 				true,
+			));
+			out.push(CommandInfo::new(
+				strings::commands::stashlist_inspect(
+					&self.key_config,
+				),
+				selection_valid,
+				self.commit_details.is_visible(),
 			));
 		}
 
@@ -193,11 +256,17 @@ impl Component for StashList {
 	) -> Result<EventState> {
 		if self.is_visible() {
 			if self.list.event(ev)?.is_consumed() {
+				self.update()?;
 				return Ok(EventState::Consumed);
 			}
 
 			if let Event::Key(k) = ev {
 				if key_match(k, self.key_config.keys.enter) {
+					self.commit_details.toggle_visible()?;
+					self.update()?;
+					return Ok(EventState::Consumed);
+				} else if key_match(k, self.key_config.keys.stash_pop)
+				{
 					self.pop_stash();
 				} else if key_match(
 					k,
@@ -211,9 +280,11 @@ impl Component for StashList {
 					self.drop_stash();
 				} else if key_match(
 					k,
-					self.key_config.keys.stash_open,
-				) {
+					self.key_config.keys.move_right,
+				) && self.commit_details.is_visible()
+				{
 					self.inspect();
+					return Ok(EventState::Consumed);
 				}
 			}
 		}
