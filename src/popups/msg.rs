@@ -137,12 +137,12 @@ impl Component for MsgPopup {
 			if let Event::Key(e) = ev {
 				if key_match(e, self.key_config.keys.exit_popup) {
 					self.hide();
-				} else if key_match(
-					e,
-					self.key_config.keys.popup_down,
-				) {
+				} else if key_match(e, self.key_config.keys.move_down)
+					|| key_match(e, self.key_config.keys.popup_down)
+				{
 					self.scroll.move_top(ScrollType::Down);
-				} else if key_match(e, self.key_config.keys.popup_up)
+				} else if key_match(e, self.key_config.keys.move_up)
+					|| key_match(e, self.key_config.keys.popup_up)
 				{
 					self.scroll.move_top(ScrollType::Up);
 				}

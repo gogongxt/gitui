@@ -233,9 +233,13 @@ impl Component for ResetPopup {
 				} else if key_match(
 					key,
 					self.key_config.keys.move_down,
+				) || key_match(
+					key,
+					self.key_config.keys.popup_down,
 				) {
 					self.change_kind(true);
 				} else if key_match(key, self.key_config.keys.move_up)
+					|| key_match(key, self.key_config.keys.popup_up)
 				{
 					self.change_kind(false);
 				} else if key_match(key, self.key_config.keys.enter) {

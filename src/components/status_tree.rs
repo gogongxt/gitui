@@ -592,11 +592,14 @@ impl Component for StatusTreeComponent {
 					self.open_copy_path_popup();
 					Ok(EventState::Consumed)
 				} else if key_match(e, self.key_config.keys.move_down)
+					|| key_match(e, self.key_config.keys.popup_down)
 				{
 					Ok(self
 						.move_selection(MoveSelection::Down)
 						.into())
-				} else if key_match(e, self.key_config.keys.move_up) {
+				} else if key_match(e, self.key_config.keys.move_up)
+					|| key_match(e, self.key_config.keys.popup_up)
+				{
 					Ok(self.move_selection(MoveSelection::Up).into())
 				} else if key_match(e, self.key_config.keys.home)
 					|| key_match(e, self.key_config.keys.shift_up)

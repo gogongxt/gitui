@@ -258,11 +258,15 @@ impl Component for BlameFilePopup {
 				if key_match(key, self.key_config.keys.exit_popup) {
 					self.hide_stacked(false);
 				} else if key_match(key, self.key_config.keys.move_up)
+					|| key_match(key, self.key_config.keys.popup_up)
 				{
 					self.move_selection(ScrollType::Up);
 				} else if key_match(
 					key,
 					self.key_config.keys.move_down,
+				) || key_match(
+					key,
+					self.key_config.keys.popup_down,
 				) {
 					self.move_selection(ScrollType::Down);
 				} else if key_match(

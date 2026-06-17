@@ -867,12 +867,18 @@ impl Component for Status {
 						DiffTarget::WorkingDir => Focus::WorkDir,
 					})
 					.map(Into::into)
-				} else if key_match(k, self.key_config.keys.move_down)
-					&& self.focus == Focus::WorkDir
+				} else if (key_match(
+					k,
+					self.key_config.keys.move_down,
+				) || key_match(
+					k,
+					self.key_config.keys.popup_down,
+				)) && self.focus == Focus::WorkDir
 					&& !self.index.is_empty()
 				{
 					self.switch_focus(Focus::Stage).map(Into::into)
-				} else if key_match(k, self.key_config.keys.move_up)
+				} else if (key_match(k, self.key_config.keys.move_up)
+					|| key_match(k, self.key_config.keys.popup_up))
 					&& self.focus == Focus::Stage
 					&& !self.index_wd.is_empty()
 				{

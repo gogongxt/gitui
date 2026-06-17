@@ -128,9 +128,13 @@ pub fn common_nav(
 	key: &crossterm::event::KeyEvent,
 	key_config: &SharedKeyConfig,
 ) -> Option<MoveSelection> {
-	if key_match(key, key_config.keys.move_down) {
+	if key_match(key, key_config.keys.move_down)
+		|| key_match(key, key_config.keys.popup_down)
+	{
 		Some(MoveSelection::Down)
-	} else if key_match(key, key_config.keys.move_up) {
+	} else if key_match(key, key_config.keys.move_up)
+		|| key_match(key, key_config.keys.popup_up)
+	{
 		Some(MoveSelection::Up)
 	} else if key_match(key, key_config.keys.page_up) {
 		Some(MoveSelection::PageUp)

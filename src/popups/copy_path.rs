@@ -253,9 +253,13 @@ impl Component for CopyPathPopup {
 				} else if key_match(
 					key,
 					self.key_config.keys.move_down,
+				) || key_match(
+					key,
+					self.key_config.keys.popup_down,
 				) {
 					self.kind = self.kind.next();
 				} else if key_match(key, self.key_config.keys.move_up)
+					|| key_match(key, self.key_config.keys.popup_up)
 				{
 					self.kind = self.kind.previous();
 				} else if key_match(key, self.key_config.keys.enter) {

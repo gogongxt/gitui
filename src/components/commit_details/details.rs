@@ -362,7 +362,9 @@ impl Component for DetailsComponent {
 		if self.focused {
 			if let Event::Key(e) = event {
 				return Ok(
-					if key_match(e, self.key_config.keys.move_up) {
+					if key_match(e, self.key_config.keys.move_up)
+						|| key_match(e, self.key_config.keys.popup_up)
+					{
 						self.move_scroll_top(ScrollType::Up).into()
 					} else if key_match(
 						e,

@@ -2518,6 +2518,7 @@ impl Component for DiffComponent {
 		if self.focused() {
 			if let Event::Key(e) = ev {
 				return if key_match(e, self.key_config.keys.move_down)
+					|| key_match(e, self.key_config.keys.popup_down)
 				{
 					self.move_selection(ScrollType::Down);
 					Ok(EventState::Consumed)
@@ -2537,7 +2538,9 @@ impl Component for DiffComponent {
 				} else if key_match(e, self.key_config.keys.home) {
 					self.move_selection(ScrollType::Home);
 					Ok(EventState::Consumed)
-				} else if key_match(e, self.key_config.keys.move_up) {
+				} else if key_match(e, self.key_config.keys.move_up)
+					|| key_match(e, self.key_config.keys.popup_up)
+				{
 					self.move_selection(ScrollType::Up);
 					Ok(EventState::Consumed)
 				} else if key_match(e, self.key_config.keys.page_up) {

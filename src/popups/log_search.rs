@@ -515,14 +515,17 @@ impl LogSearchPopupPopup {
 				&& self.is_valid()
 			{
 				self.execute_confirm();
-			} else if key_match(key, self.key_config.keys.popup_up) {
+			} else if key_match(key, self.key_config.keys.move_up)
+				|| key_match(key, self.key_config.keys.popup_up)
+			{
 				self.move_selection(true);
 			} else if key_match(
 				key,
 				self.key_config.keys.find_commit_sha,
 			) {
 				self.set_mode(&PopupMode::JumpCommitSha);
-			} else if key_match(key, self.key_config.keys.popup_down)
+			} else if key_match(key, self.key_config.keys.move_down)
+				|| key_match(key, self.key_config.keys.popup_down)
 			{
 				self.move_selection(false);
 			} else if key_match(

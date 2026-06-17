@@ -503,11 +503,14 @@ impl Component for Reflog {
 						self.update_details()?;
 					}
 					return Ok(EventState::Consumed);
-				} else if key_match(k, self.key_config.keys.move_up) {
+				} else if key_match(k, self.key_config.keys.move_up)
+					|| key_match(k, self.key_config.keys.popup_up)
+				{
 					self.move_selection(ScrollType::Up);
 					self.update_details()?;
 					return Ok(EventState::Consumed);
 				} else if key_match(k, self.key_config.keys.move_down)
+					|| key_match(k, self.key_config.keys.popup_down)
 				{
 					self.move_selection(ScrollType::Down);
 					self.update_details()?;

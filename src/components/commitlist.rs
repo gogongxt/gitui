@@ -831,9 +831,12 @@ impl Component for CommitList {
 	fn event(&mut self, ev: &Event) -> Result<EventState> {
 		if let Event::Key(k) = ev {
 			let selection_changed =
-				if key_match(k, self.key_config.keys.move_up) {
+				if key_match(k, self.key_config.keys.move_up)
+					|| key_match(k, self.key_config.keys.popup_up)
+				{
 					self.move_selection(ScrollType::Up)?
 				} else if key_match(k, self.key_config.keys.move_down)
+					|| key_match(k, self.key_config.keys.popup_down)
 				{
 					self.move_selection(ScrollType::Down)?
 				} else if key_match(k, self.key_config.keys.shift_up)
