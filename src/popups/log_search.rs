@@ -514,8 +514,7 @@ impl LogSearchPopupPopup {
 				&& self.is_valid()
 			{
 				self.execute_confirm();
-			} else if key_match(key, self.key_config.keys.popup_up)
-			{
+			} else if key_match(key, self.key_config.keys.popup_up) {
 				self.move_selection(true);
 			} else if key_match(
 				key,

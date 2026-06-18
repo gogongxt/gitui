@@ -350,13 +350,13 @@ mod tests {
 		);
 		write_commit_file(&repo, "foo", "b", "commit3");
 
-		let log_filter = filter_commit_by_search(LogFilterSearch::new(
-			LogFilterSearchOptions {
+		let log_filter = filter_commit_by_search(
+			LogFilterSearch::new(LogFilterSearchOptions {
 				fields: SearchFields::MESSAGE_SUMMARY,
 				options: SearchOptions::FUZZY_SEARCH,
 				search_pattern: String::from("my msg"),
-			},
-		));
+			}),
+		);
 
 		let mut items = Vec::new();
 		let mut walker = LogWalker::new(&repo, 100)
@@ -367,13 +367,13 @@ mod tests {
 		assert_eq!(items.len(), 1);
 		assert_eq!(items[0], second_commit_id);
 
-		let log_filter = filter_commit_by_search(LogFilterSearch::new(
-			LogFilterSearchOptions {
+		let log_filter = filter_commit_by_search(
+			LogFilterSearch::new(LogFilterSearchOptions {
 				fields: SearchFields::FILENAMES,
 				options: SearchOptions::FUZZY_SEARCH,
 				search_pattern: String::from("fo"),
-			},
-		));
+			}),
+		);
 
 		let mut items = Vec::new();
 		let mut walker = LogWalker::new(&repo, 100)

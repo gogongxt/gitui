@@ -208,8 +208,10 @@ pub fn filter_commit_by_search(
 				.fields
 				.contains(SearchFields::FILENAMES)
 				.then(|| {
-					get_commit_diff(repo, *commit_id, None, None, None)
-						.ok()
+					get_commit_diff(
+						repo, *commit_id, None, None, None,
+					)
+					.ok()
 				})
 				.flatten()
 				.is_some_and(|diff| filter.match_diff(&diff));
