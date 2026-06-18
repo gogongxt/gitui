@@ -6,9 +6,13 @@ use crate::error::Result;
 use bitflags::bitflags;
 use fuzzy_matcher::FuzzyMatcher;
 use git2::{Diff, Repository};
-use std::sync::{
-	atomic::{AtomicU64, Ordering},
-	Arc,
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+	sync::{
+		atomic::{AtomicU64, Ordering},
+		Arc,
+	},
 };
 
 ///
@@ -35,9 +39,24 @@ pub struct FilterTimings {
 }
 
 impl FilterTimings {
+	#[allow(clippy::unused_self)]
 	fn add(&self, counter: &AtomicU64, us: u64) {
 		counter.fetch_add(us, Ordering::Relaxed);
 	}
+}
+
+// Per-thread cache of `Mailmap` objects, keyed by the repository's workdir
+// path. `git2::Mailmap` is `!Send`, so it must live in thread-local storage.
+//
+// `repo.mailmap()` stat-opens several paths (`.mailmap`, repo config, etc.)
+// on every call; without caching this dominates search latency on NFS.
+// The mailmap is independent of the commit being filtered, so one per repo
+// per thread is sufficient. `None` means the repo has no mailmap (or reading
+// it failed), so author resolution falls back to the raw commit author.
+thread_local! {
+	static MAILMAP_CACHE:
+		std::cell::RefCell<HashMap<PathBuf, Option<git2::Mailmap>>> =
+		std::cell::RefCell::new(HashMap::new());
 }
 
 ///
@@ -183,6 +202,7 @@ impl LogFilterSearch {
 }
 
 ///
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn filter_commit_by_search(
 	filter: LogFilterSearch,
 	timings: Arc<FilterTimings>,
@@ -193,10 +213,6 @@ pub fn filter_commit_by_search(
 		      -> Result<bool> {
 			let call_start = std::time::Instant::now();
 			timings.calls.fetch_add(1, Ordering::Relaxed);
-
-			let t0 = std::time::Instant::now();
-			let mailmap = repo.mailmap()?;
-			timings.add(&timings.mailmap_us, t0.elapsed().as_micros() as u64);
 
 			let t0 = std::time::Instant::now();
 			let commit = repo.find_commit((*commit_id).into())?;
@@ -249,19 +265,46 @@ pub fn filter_commit_by_search(
 				.fields
 				.contains(SearchFields::AUTHORS)
 			{
-				let t = std::time::Instant::now();
-				let author = get_author_of_commit(&commit, &mailmap);
-				let r = [author.email(), author.name()].iter().any(
-					|opt_haystack| {
-						opt_haystack.is_some_and(|haystack| {
-							filter.match_text(haystack)
-						})
-					},
-				);
-				timings.add(
-					&timings.author_us,
-					t.elapsed().as_micros() as u64,
-				);
+				let commit_ref = &commit;
+				let filter_ref = &filter;
+				let mailmap_t = std::time::Instant::now();
+				// Mailmap is repo-scoped, not commit-scoped. Cache it per
+				// thread keyed by workdir path so we only stat the mailmap
+				// sources once per repo per thread, instead of once per
+				// commit. `git2::Mailmap` is `!Send` and un-Cloneable, so
+				// the author resolution must happen inside the `with` block
+				// while we hold a borrowed reference to the cached mailmap.
+				let r = MAILMAP_CACHE.with(|cache| {
+					let mut cache = cache.borrow_mut();
+					let key = repo
+						.workdir()
+						.map(Path::to_path_buf)
+						.unwrap_or_default();
+					let mailmap = cache
+						.entry(key)
+						.or_insert_with(|| repo.mailmap().ok());
+					timings.add(
+						&timings.mailmap_us,
+						mailmap_t.elapsed().as_micros() as u64,
+					);
+					let author_t = std::time::Instant::now();
+					let author = mailmap.as_ref().map_or_else(
+						|| commit_ref.author(),
+						|mm| get_author_of_commit(commit_ref, mm),
+					);
+					let matched = [author.email(), author.name()]
+						.iter()
+						.any(|opt_haystack| {
+							opt_haystack.is_some_and(|haystack| {
+								filter_ref.match_text(haystack)
+							})
+						});
+					timings.add(
+						&timings.author_us,
+						author_t.elapsed().as_micros() as u64,
+					);
+					matched
+				});
 				r
 			} else {
 				false
