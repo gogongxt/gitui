@@ -857,10 +857,6 @@ impl App {
 				}
 				flags.insert(NeedsUpdate::ALL);
 			}
-			InternalEvent::PushTags => {
-				self.push_tags_popup.push_tags()?;
-				flags.insert(NeedsUpdate::ALL);
-			}
 			InternalEvent::StatusLastFileMoved => {
 				self.status_tab.last_file_moved()?;
 			}
@@ -1047,6 +1043,9 @@ impl App {
 					"undo commit failed:",
 					undo_last_commit(&self.repo.borrow())
 				);
+			}
+			Action::PushTags => {
+				self.push_tags_popup.push_tags()?;
 			}
 		}
 

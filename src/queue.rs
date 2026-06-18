@@ -59,6 +59,7 @@ pub enum Action {
 	AbortRebase,
 	AbortRevert,
 	UndoCommit,
+	PushTags,
 }
 
 #[derive(Debug)]
@@ -128,8 +129,6 @@ pub enum InternalEvent {
 	Push(String, PushType, bool, bool),
 	///
 	Pull(String),
-	///
-	PushTags,
 	///
 	OptionSwitched(AppOption),
 	///

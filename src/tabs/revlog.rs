@@ -8,7 +8,7 @@ use crate::{
 	keys::{key_match, SharedKeyConfig},
 	options::SharedOptions,
 	popups::{FileTreeOpen, InspectCommitOpen},
-	queue::{InternalEvent, Queue, StackablePopupOpen},
+	queue::{Action, InternalEvent, Queue, StackablePopupOpen},
 	strings::{self, order},
 	try_or_popup,
 	ui::style::{SharedTheme, Theme},
@@ -487,7 +487,9 @@ impl Component for Revlog {
 					);
 					return Ok(EventState::Consumed);
 				} else if key_match(k, self.key_config.keys.push) {
-					self.queue.push(InternalEvent::PushTags);
+					self.queue.push(InternalEvent::ConfirmAction(
+						Action::PushTags,
+					));
 					return Ok(EventState::Consumed);
 				} else if key_match(
 					k,

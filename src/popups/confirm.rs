@@ -128,100 +128,136 @@ impl ConfirmPopup {
 		self.hide();
 	}
 
+	#[allow(clippy::too_many_lines)]
 	fn get_text(&self) -> (String, String) {
 		if let Some(ref a) = self.target {
 			return match a {
-                Action::Reset(_) => (
-                    strings::confirm_title_reset(),
-                    strings::confirm_msg_reset(),
-                ),
-                Action::StashDrop(ids) => (
-                    strings::confirm_title_stashdrop(
-                        &self.key_config,ids.len()>1
-                    ),
-                    strings::confirm_msg_stashdrop(&self.key_config,ids),
-                ),
-                Action::StashPop(_) => (
-                    strings::confirm_title_stashpop(&self.key_config),
-                    strings::confirm_msg_stashpop(&self.key_config),
-                ),
-                Action::StashApply(_) => (
-                    strings::confirm_title_stashapply(&self.key_config),
-                    strings::confirm_msg_stashapply(&self.key_config),
-                ),
-                Action::ResetHunk(_, _) => (
-                    strings::confirm_title_reset(),
-                    strings::confirm_msg_resethunk(&self.key_config),
-                ),
-                Action::ResetLines(_, lines) => (
-                    strings::confirm_title_reset(),
-                    strings::confirm_msg_reset_lines(lines.len()),
-                ),
-                Action::DeleteLocalBranch(branch_ref) => (
-                    strings::confirm_title_delete_branch(
-                        &self.key_config,
-                    ),
-                    strings::confirm_msg_delete_branch(
-                        &self.key_config,
-                        branch_ref,
-                    ),
-                ),
-                Action::DeleteRemoteBranch(branch_ref) => (
-                    strings::confirm_title_delete_remote_branch(
-                        &self.key_config,
-                    ),
-                    strings::confirm_msg_delete_remote_branch(
-                        &self.key_config,
-                        branch_ref,
-                    ),
-                ),
-		Action::DeleteRemote(remote_name)=>(
-			strings::confirm_title_delete_remote(&self.key_config),
-			strings::confirm_msg_delete_remote(&self.key_config,remote_name),
-		),
-                Action::DeleteTag(tag_name) => (
-                    strings::confirm_title_delete_tag(
-                        &self.key_config,
-                    ),
-                    strings::confirm_msg_delete_tag(
-                        &self.key_config,
-                        tag_name,
-                    ),
-                ),
-				Action::DeleteRemoteTag(_tag_name,remote) => (
-                    strings::confirm_title_delete_tag_remote(),
-                    strings::confirm_msg_delete_tag_remote(remote),
-                ),
-                Action::ForcePush(branch, _force) => (
-                    strings::confirm_title_force_push(
-                        &self.key_config,
-                    ),
-                    strings::confirm_msg_force_push(
-                        &self.key_config,
-                        branch.rsplit('/').next().expect("There was no / in the head reference which is impossible in git"),
-                    ),
-                ),
-                Action::PullMerge{incoming,rebase} => (
-                    strings::confirm_title_merge(&self.key_config,*rebase),
-                    strings::confirm_msg_merge(&self.key_config,*incoming,*rebase),
-                ),
-                Action::AbortMerge => (
-                    strings::confirm_title_abortmerge(),
-                    strings::confirm_msg_revertchanges(),
-                ),
+				Action::Reset(_) => (
+					strings::confirm_title_reset(),
+					strings::confirm_msg_reset(),
+				),
+				Action::StashDrop(ids) => (
+					strings::confirm_title_stashdrop(
+						&self.key_config,
+						ids.len() > 1,
+					),
+					strings::confirm_msg_stashdrop(
+						&self.key_config,
+						ids,
+					),
+				),
+				Action::StashPop(_) => (
+					strings::confirm_title_stashpop(&self.key_config),
+					strings::confirm_msg_stashpop(&self.key_config),
+				),
+				Action::StashApply(_) => (
+					strings::confirm_title_stashapply(
+						&self.key_config,
+					),
+					strings::confirm_msg_stashapply(&self.key_config),
+				),
+				Action::ResetHunk(_, _) => (
+					strings::confirm_title_reset(),
+					strings::confirm_msg_resethunk(&self.key_config),
+				),
+				Action::ResetLines(_, lines) => (
+					strings::confirm_title_reset(),
+					strings::confirm_msg_reset_lines(lines.len()),
+				),
+				Action::DeleteLocalBranch(branch_ref) => (
+					strings::confirm_title_delete_branch(
+						&self.key_config,
+					),
+					strings::confirm_msg_delete_branch(
+						&self.key_config,
+						branch_ref,
+					),
+				),
+				Action::DeleteRemoteBranch(branch_ref) => (
+					strings::confirm_title_delete_remote_branch(
+						&self.key_config,
+					),
+					strings::confirm_msg_delete_remote_branch(
+						&self.key_config,
+						branch_ref,
+					),
+				),
+				Action::DeleteRemote(remote_name) => (
+					strings::confirm_title_delete_remote(
+						&self.key_config,
+					),
+					strings::confirm_msg_delete_remote(
+						&self.key_config,
+						remote_name,
+					),
+				),
+				Action::DeleteTag(tag_name) => (
+					strings::confirm_title_delete_tag(
+						&self.key_config,
+					),
+					strings::confirm_msg_delete_tag(
+						&self.key_config,
+						tag_name,
+					),
+				),
+				Action::DeleteRemoteTag(_tag_name, remote) => (
+					strings::confirm_title_delete_tag_remote(),
+					strings::confirm_msg_delete_tag_remote(remote),
+				),
+				Action::ForcePush(branch, force) => {
+					let branch_name = branch
+                        .rsplit('/')
+                        .next()
+                        .expect("There was no / in the head reference which is impossible in git");
+					if *force {
+						(
+							strings::confirm_title_force_push(
+								&self.key_config,
+							),
+							strings::confirm_msg_force_push(
+								&self.key_config,
+								branch_name,
+							),
+						)
+					} else {
+						(
+							strings::confirm_title_push(),
+							strings::confirm_msg_push(branch_name),
+						)
+					}
+				}
+				Action::PullMerge { incoming, rebase } => (
+					strings::confirm_title_merge(
+						&self.key_config,
+						*rebase,
+					),
+					strings::confirm_msg_merge(
+						&self.key_config,
+						*incoming,
+						*rebase,
+					),
+				),
+				Action::AbortMerge => (
+					strings::confirm_title_abortmerge(),
+					strings::confirm_msg_revertchanges(),
+				),
 				Action::AbortRebase => (
-                    strings::confirm_title_abortrebase(),
-                    strings::confirm_msg_abortrebase(),
-                ),
+					strings::confirm_title_abortrebase(),
+					strings::confirm_msg_abortrebase(),
+				),
 				Action::AbortRevert => (
-                    strings::confirm_title_abortrevert(),
-                    strings::confirm_msg_revertchanges(),
-                ),
-                Action::UndoCommit => (
-                    strings::confirm_title_undo_commit(),
-                    strings::confirm_msg_undo_commit(),
-                ),
-            };
+					strings::confirm_title_abortrevert(),
+					strings::confirm_msg_revertchanges(),
+				),
+				Action::UndoCommit => (
+					strings::confirm_title_undo_commit(),
+					strings::confirm_msg_undo_commit(),
+				),
+				Action::PushTags => (
+					strings::confirm_title_push_tags(),
+					strings::confirm_msg_push_tags(),
+				),
+			};
 		}
 
 		(String::new(), String::new())

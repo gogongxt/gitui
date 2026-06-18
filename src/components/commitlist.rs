@@ -318,10 +318,8 @@ impl CommitList {
 		let new_index = match scroll {
 			ScrollType::Up => current_index.saturating_sub(1),
 			ScrollType::Down => current_index.saturating_add(1),
-
-			//TODO: support this?
-			// ScrollType::Home => 0,
-			// ScrollType::End => self.selection_max(),
+			ScrollType::Home => 0,
+			ScrollType::End => selection_max.saturating_sub(1),
 			_ => return Ok(false),
 		};
 

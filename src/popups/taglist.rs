@@ -264,7 +264,9 @@ impl Component for TagListPopup {
 				} else if key_match(key, self.key_config.keys.push)
 					&& self.has_remotes
 				{
-					self.queue.push(InternalEvent::PushTags);
+					self.queue.push(InternalEvent::ConfirmAction(
+						Action::PushTags,
+					));
 				}
 			}
 

@@ -318,6 +318,18 @@ pub fn confirm_msg_force_push(
         "Confirm force push to branch '{branch_ref}' ?  This may rewrite history."
     )
 }
+pub fn confirm_title_push_tags() -> String {
+	"Push Tags".to_string()
+}
+pub fn confirm_msg_push_tags() -> String {
+	"Confirm pushing all tags to remote ?".to_string()
+}
+pub fn confirm_title_push() -> String {
+	"Push".to_string()
+}
+pub fn confirm_msg_push(branch_ref: &str) -> String {
+	format!("Confirm push to branch '{branch_ref}' ?")
+}
 pub fn log_title(_key_config: &SharedKeyConfig) -> String {
 	"Commit".to_string()
 }

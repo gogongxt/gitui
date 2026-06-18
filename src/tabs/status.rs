@@ -21,7 +21,7 @@ use asyncgit::{
 	},
 	sync::{BranchCompare, CommitId},
 	AsyncDiff, AsyncGitNotification, AsyncStatus, DiffParams,
-	DiffType, PushType, StatusItem, StatusParams,
+	DiffType, StatusItem, StatusParams,
 };
 use crossterm::event::Event;
 use itertools::Itertools;
@@ -572,18 +572,9 @@ impl Status {
 	fn push(&self, force: bool) {
 		if self.can_push() {
 			if let Some(branch) = self.git_branch_name.last() {
-				if force {
-					self.queue.push(InternalEvent::ConfirmAction(
-						Action::ForcePush(branch, force),
-					));
-				} else {
-					self.queue.push(InternalEvent::Push(
-						branch,
-						PushType::Branch,
-						force,
-						false,
-					));
-				}
+				self.queue.push(InternalEvent::ConfirmAction(
+					Action::ForcePush(branch, force),
+				));
 			}
 		}
 	}
