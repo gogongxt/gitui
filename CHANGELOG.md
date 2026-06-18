@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v1.5] - 2026-06-18
+
+### Changed
+* search result navigation: `j`/`k`, `g`/`G` and page up/down now walk every commit instead of being locked to matches; `ctrl+n`/`ctrl+p` still jumps between matches with wrap-around, and now jumps from the actual cursor position to the nearest match
+* `ctrl+n`/`ctrl+p` centers the target commit in the viewport when it is off-screen instead of pinning it to the top/bottom row
+* search status line now reflects the cursor's position in the match range (`0/N` before the first match through `N/N` on the last)
+* ask for confirmation before pushing tags from the revlog and taglist popup, and before branch push from the status tab (force push already asked)
+* cache mailmap per thread during commit search, avoiding a `repo.mailmap()` stat per commit — major speedup on NFS-backed repositories
+
+### Fixed
+* selected row keeps its background on non-highlighted commits while a search is active
+* `g`/`G` (home/end) now work in search-highlighted commit list instead of being a no-op when the cursor is on a non-matching commit
+* `j`/`k` in the log search popup now type into the search box instead of moving the option cursor
+
 ## [0.28.1] - 2026-03-21
 
 ### Changed
