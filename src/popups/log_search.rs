@@ -70,10 +70,9 @@ impl LogSearchPopupPopup {
 			mode: PopupMode::Search,
 			key_config: env.key_config.clone(),
 			options: (
-				// Enable all search fields by default including commit hash
+				// Enable search fields by default (FILENAMES off for performance)
 				SearchFields::MESSAGE_SUMMARY
 					| SearchFields::MESSAGE_BODY
-					| SearchFields::FILENAMES
 					| SearchFields::AUTHORS
 					| SearchFields::COMMIT_HASHES,
 				// Disable fuzzy search by default (use exact match)
