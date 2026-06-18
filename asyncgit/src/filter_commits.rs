@@ -6,7 +6,7 @@ use rayon::{
 use crate::{
 	asyncjob::{AsyncJob, RunParams},
 	error::Result,
-	sync::{self, CommitId, RepoPath, SharedCommitFilterFn},
+	sync::{self, CommitId, FilterTimings, RepoPath, SharedCommitFilterFn},
 	AsyncGitNotification, ProgressPercent,
 };
 use std::{
@@ -23,6 +23,8 @@ pub struct CommitFilterResult {
 	pub result: Vec<CommitId>,
 	///
 	pub duration: Duration,
+	///
+	pub timings: Option<Arc<FilterTimings>>,
 }
 
 enum JobState {
@@ -39,6 +41,7 @@ pub struct AsyncCommitFilterJob {
 	state: Arc<Mutex<Option<JobState>>>,
 	filter: SharedCommitFilterFn,
 	cancellation_flag: Arc<AtomicBool>,
+	timings: Arc<FilterTimings>,
 }
 
 ///
@@ -49,6 +52,7 @@ impl AsyncCommitFilterJob {
 		commits: Vec<CommitId>,
 		filter: SharedCommitFilterFn,
 		cancellation_flag: Arc<AtomicBool>,
+		timings: Arc<FilterTimings>,
 	) -> Self {
 		Self {
 			state: Arc::new(Mutex::new(Some(JobState::Request {
@@ -57,6 +61,7 @@ impl AsyncCommitFilterJob {
 			}))),
 			filter,
 			cancellation_flag,
+			timings,
 		}
 	}
 
@@ -85,7 +90,20 @@ impl AsyncCommitFilterJob {
 			.map(|(start, result)| CommitFilterResult {
 				result,
 				duration: start.elapsed(),
+				timings: Some(Arc::clone(&self.timings)),
 			});
+
+		let t = &self.timings;
+		log::info!(
+			"commit filter timings: total={:?} calls={} | mailmap={}ms find_commit={}ms diff={}ms author={}ms (wall incl. overlap) other={}ms",
+			result.as_ref().ok().map(|r| r.duration),
+			t.calls.load(Ordering::Relaxed),
+			t.mailmap_us.load(Ordering::Relaxed) / 1000,
+			t.find_commit_us.load(Ordering::Relaxed) / 1000,
+			t.diff_us.load(Ordering::Relaxed) / 1000,
+			t.author_us.load(Ordering::Relaxed) / 1000,
+			t.other_us.load(Ordering::Relaxed) / 1000,
+		);
 
 		JobState::Response(result)
 	}

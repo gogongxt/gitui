@@ -17,8 +17,8 @@ use anyhow::Result;
 use asyncgit::{
 	asyncjob::AsyncSingleJob,
 	sync::{
-		self, filter_commit_by_search, CommitId, LogFilterSearch,
-		LogFilterSearchOptions, RepoPathRef,
+		self, filter_commit_by_search, CommitId, FilterTimings,
+		LogFilterSearch, LogFilterSearchOptions, RepoPathRef,
 	},
 	AsyncBranchesJob, AsyncCommitFilterJob, AsyncGitNotification,
 	AsyncLog, AsyncTags, CommitFilesParams, FetchStatus,
@@ -255,8 +255,10 @@ impl Revlog {
 		) {
 			log::info!("start search: {options:?}");
 
+			let timings = Arc::new(FilterTimings::default());
 			let filter = filter_commit_by_search(
 				LogFilterSearch::new(options.clone()),
+				Arc::clone(&timings),
 			);
 
 			let cancellation_flag = Arc::new(AtomicBool::new(false));
@@ -267,6 +269,7 @@ impl Revlog {
 				self.list.copy_items(),
 				filter,
 				Arc::clone(&cancellation_flag),
+				timings,
 			));
 
 			self.search = LogSearch::Searching(

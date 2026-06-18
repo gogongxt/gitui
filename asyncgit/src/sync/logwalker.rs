@@ -180,7 +180,9 @@ impl<'a> LogWalkerWithoutFilter<'a> {
 mod tests {
 	use super::*;
 	use crate::error::Result;
-	use crate::sync::commit_filter::{SearchFields, SearchOptions};
+	use crate::sync::commit_filter::{
+		FilterTimings, SearchFields, SearchOptions,
+	};
 	use crate::sync::repository::gix_repo;
 	use crate::sync::tests::write_commit_file;
 	use crate::sync::{
@@ -356,6 +358,7 @@ mod tests {
 				options: SearchOptions::FUZZY_SEARCH,
 				search_pattern: String::from("my msg"),
 			}),
+			std::sync::Arc::new(FilterTimings::default()),
 		);
 
 		let mut items = Vec::new();
@@ -373,6 +376,7 @@ mod tests {
 				options: SearchOptions::FUZZY_SEARCH,
 				search_pattern: String::from("fo"),
 			}),
+			std::sync::Arc::new(FilterTimings::default()),
 		);
 
 		let mut items = Vec::new();

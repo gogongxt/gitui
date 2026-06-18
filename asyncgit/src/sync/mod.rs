@@ -52,8 +52,8 @@ pub use commit_details::{
 };
 pub use commit_files::get_commit_files;
 pub use commit_filter::{
-	diff_contains_file, filter_commit_by_search, LogFilterSearch,
-	LogFilterSearchOptions, SearchFields, SearchOptions,
+	diff_contains_file, filter_commit_by_search, FilterTimings,
+	LogFilterSearch, LogFilterSearchOptions, SearchFields, SearchOptions,
 	SharedCommitFilterFn,
 };
 pub use commit_revert::{commit_revert, revert_commit, revert_head};
