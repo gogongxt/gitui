@@ -226,8 +226,11 @@ impl Theme {
 		)
 	}
 
-	pub fn commit_unhighlighted(&self) -> Style {
-		Style::default().fg(self.disabled_fg)
+	pub fn commit_unhighlighted(&self, selected: bool) -> Style {
+		self.apply_select(
+			Style::default().fg(self.disabled_fg),
+			selected,
+		)
 	}
 
 	pub fn log_marker(&self, selected: bool) -> Style {

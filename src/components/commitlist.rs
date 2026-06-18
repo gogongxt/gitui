@@ -23,7 +23,6 @@ use indexmap::IndexSet;
 use itertools::Itertools;
 use ratatui::{
 	layout::{Alignment, Rect},
-	style::Style,
 	text::{Line, Span},
 	widgets::{Block, Borders, Paragraph},
 	Frame,
@@ -55,6 +54,10 @@ pub struct CommitList {
 	remote_branches: BTreeMap<CommitId, Vec<BranchInfo>>,
 	current_size: Cell<Option<(u16, u16)>>,
 	scroll_top: Cell<usize>,
+	/// When set, the next draw centers the selection in the viewport
+	/// instead of just scrolling it into view. Used by highlight jumps
+	/// (ctrl+n/p) so the target commit lands mid-screen.
+	center_next_scroll: Cell<bool>,
 	theme: SharedTheme,
 	queue: Queue,
 	key_config: SharedKeyConfig,
@@ -77,6 +80,7 @@ impl CommitList {
 			remote_branches: BTreeMap::default(),
 			current_size: Cell::new(None),
 			scroll_top: Cell::new(0),
+			center_next_scroll: Cell::new(false),
 			theme: env.theme.clone(),
 			queue: env.queue.clone(),
 			key_config: env.key_config.clone(),
@@ -270,6 +274,24 @@ impl CommitList {
 		(self.highlighted_selection.unwrap_or_default(), amount)
 	}
 
+	/// Display position of the current selection within the highlights,
+	/// for the search status line: the number of highlights at or before
+	/// the current selection. Ranges from 0 (before the first highlight)
+	/// to the total highlight count (on the last highlight).
+	pub fn highlighted_selection_display(&self) -> usize {
+		let Some(highlights) = self.highlights.as_ref() else {
+			return 0;
+		};
+		highlights
+			.iter()
+			.filter(|id| {
+				self.commits
+					.get_index_of(*id)
+					.is_some_and(|p| p <= self.selection)
+			})
+			.count()
+	}
+
 	fn set_highlighted_selection_index(&mut self) {
 		self.highlighted_selection =
 			self.highlights.as_ref().and_then(|highlights| {
@@ -312,33 +334,53 @@ impl CommitList {
 		&mut self,
 		scroll: ScrollType,
 	) -> Result<bool> {
-		let (current_index, selection_max) =
-			self.highlighted_selection_info();
+		let (_, selection_max) = self.highlighted_selection_info();
+
+		if selection_max == 0 {
+			return Ok(false);
+		}
+
+		let highlights = self
+			.highlights
+			.as_ref()
+			.expect("highlights exist when selection_max > 0");
+
+		let last = selection_max.saturating_sub(1);
+		let cur_pos = self.selection;
+
+		// Map each highlight to its position in the full commit list.
+		// Highlights are stored in commit order, so positions are
+		// monotonically non-decreasing.
+		let positions: Vec<usize> = highlights
+			.iter()
+			.filter_map(|id| self.commits.get_index_of(id))
+			.collect();
 
 		let new_index = match scroll {
-			ScrollType::Up => current_index.saturating_sub(1),
-			ScrollType::Down => current_index.saturating_add(1),
+			ScrollType::Up => positions
+				.iter()
+				.rposition(|&p| p < cur_pos)
+				.unwrap_or(last),
+			ScrollType::Down => positions
+				.iter()
+				.position(|&p| p > cur_pos)
+				.unwrap_or(0),
 			ScrollType::Home => 0,
-			ScrollType::End => selection_max.saturating_sub(1),
+			ScrollType::End => last,
 			_ => return Ok(false),
 		};
 
-		let new_index =
-			cmp::min(new_index, selection_max.saturating_sub(1));
-
-		let index_changed = new_index != current_index;
-
-		if !index_changed {
+		// Skip if the target is the highlight we're already on.
+		if positions.get(new_index) == Some(&cur_pos) {
 			return Ok(false);
 		}
 
 		let new_selected_commit =
-			self.highlights.as_ref().and_then(|highlights| {
-				highlights.iter().nth(new_index).copied()
-			});
+			highlights.iter().nth(new_index).copied();
 
 		if let Some(c) = new_selected_commit {
 			self.select_commit(c)?;
+			self.center_next_scroll.set(true);
 			return Ok(true);
 		}
 
@@ -381,6 +423,7 @@ impl CommitList {
 		let needs_update = new_selection != self.selection;
 
 		self.selection = new_selection;
+		self.set_highlighted_selection_index();
 
 		Ok(needs_update)
 	}
@@ -463,7 +506,7 @@ impl CommitList {
 			if normal {
 				theme.text(true, selected)
 			} else {
-				Style::default()
+				theme.commit_unhighlighted(selected)
 			},
 		);
 
@@ -483,32 +526,32 @@ impl CommitList {
 		let style_hash = if normal {
 			theme.commit_hash(selected)
 		} else {
-			theme.commit_unhighlighted()
+			theme.commit_unhighlighted(selected)
 		};
 		let style_time = if normal {
 			theme.commit_time(selected)
 		} else {
-			theme.commit_unhighlighted()
+			theme.commit_unhighlighted(selected)
 		};
 		let style_author = if normal {
 			theme.commit_author(selected)
 		} else {
-			theme.commit_unhighlighted()
+			theme.commit_unhighlighted(selected)
 		};
 		let style_tags = if normal {
 			theme.tags(selected)
 		} else {
-			theme.commit_unhighlighted()
+			theme.commit_unhighlighted(selected)
 		};
 		let style_branches = if normal {
 			theme.branch(selected, true)
 		} else {
-			theme.commit_unhighlighted()
+			theme.commit_unhighlighted(selected)
 		};
 		let style_msg = if normal {
 			theme.text(true, selected)
 		} else {
-			theme.commit_unhighlighted()
+			theme.commit_unhighlighted(selected)
 		};
 
 		// commit hash
@@ -778,12 +821,17 @@ impl DrawableComponent for CommitList {
 
 		let height_in_lines = current_size.1 as usize;
 		let selection = self.relative_selection();
+		let current_top = self.scroll_top.get();
+		let in_view = current_top <= selection
+			&& selection
+				< current_top.saturating_add(height_in_lines);
 
-		self.scroll_top.set(calc_scroll_top(
-			self.scroll_top.get(),
-			height_in_lines,
-			selection,
-		));
+		let new_top = if self.center_next_scroll.take() && !in_view {
+			selection.saturating_sub(height_in_lines / 2)
+		} else {
+			calc_scroll_top(current_top, height_in_lines, selection)
+		};
+		self.scroll_top.set(new_top);
 
 		let title = format!(
 			"{} {}/{}",
@@ -829,29 +877,34 @@ impl Component for CommitList {
 	fn event(&mut self, ev: &Event) -> Result<EventState> {
 		if let Event::Key(k) = ev {
 			let selection_changed =
-				if key_match(k, self.key_config.keys.move_up)
-					|| key_match(k, self.key_config.keys.popup_up)
+				if key_match(k, self.key_config.keys.move_up) {
+					self.move_selection_normal(ScrollType::Up)?
+				} else if key_match(k, self.key_config.keys.move_down)
+				{
+					self.move_selection_normal(ScrollType::Down)?
+				} else if key_match(k, self.key_config.keys.popup_up)
 				{
 					self.move_selection(ScrollType::Up)?
-				} else if key_match(k, self.key_config.keys.move_down)
-					|| key_match(k, self.key_config.keys.popup_down)
-				{
+				} else if key_match(
+					k,
+					self.key_config.keys.popup_down,
+				) {
 					self.move_selection(ScrollType::Down)?
 				} else if key_match(k, self.key_config.keys.shift_up)
 					|| key_match(k, self.key_config.keys.home)
 				{
-					self.move_selection(ScrollType::Home)?
+					self.move_selection_normal(ScrollType::Home)?
 				} else if key_match(
 					k,
 					self.key_config.keys.shift_down,
 				) || key_match(k, self.key_config.keys.end)
 				{
-					self.move_selection(ScrollType::End)?
+					self.move_selection_normal(ScrollType::End)?
 				} else if key_match(k, self.key_config.keys.page_up) {
-					self.move_selection(ScrollType::PageUp)?
+					self.move_selection_normal(ScrollType::PageUp)?
 				} else if key_match(k, self.key_config.keys.page_down)
 				{
-					self.move_selection(ScrollType::PageDown)?
+					self.move_selection_normal(ScrollType::PageDown)?
 				} else if key_match(
 					k,
 					self.key_config.keys.log_mark_commit,
@@ -913,6 +966,7 @@ mod tests {
 				commits: IndexSet::default(),
 				marked: Vec::default(),
 				scroll_top: Cell::default(),
+				center_next_scroll: Cell::default(),
 				local_branches: BTreeMap::default(),
 				remote_branches: BTreeMap::default(),
 				theme: SharedTheme::default(),

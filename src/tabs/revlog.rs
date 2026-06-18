@@ -372,7 +372,7 @@ impl Revlog {
 					),
 					format!(
 						"({}/{})",
-						(info.0 + 1).min(info.1),
+						self.list.highlighted_selection_display(),
 						info.1
 					),
 				)
