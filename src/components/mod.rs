@@ -35,6 +35,7 @@ but have function `hide()` from trait Component which does not know how
 to `draw()`.
 */
 
+mod async_delta;
 mod changes;
 mod command;
 mod commit_details;

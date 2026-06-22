@@ -132,6 +132,8 @@ pub enum AsyncGitNotification {
 	CommitFilter,
 	///
 	Reflog,
+	///
+	Delta,
 }
 
 /// helper function to calculate the hash of an arbitrary type that implements the `Hash` trait

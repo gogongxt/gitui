@@ -443,6 +443,7 @@ impl Status {
 
 		match ev {
 			AsyncGitNotification::Diff => self.update_diff()?,
+			AsyncGitNotification::Delta => self.diff.apply_delta(),
 			AsyncGitNotification::Status => self.update_status()?,
 			AsyncGitNotification::Branches => self.check_remotes(),
 			AsyncGitNotification::Push

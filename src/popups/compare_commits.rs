@@ -226,6 +226,8 @@ impl CompareCommitsPopup {
 				self.update()?;
 			} else if ev == AsyncGitNotification::Diff {
 				self.update_diff()?;
+			} else if ev == AsyncGitNotification::Delta {
+				self.diff.apply_delta();
 			}
 		}
 

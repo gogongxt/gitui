@@ -149,6 +149,9 @@ impl FileRevlogPopup {
 				AsyncGitNotification::CommitFiles
 				| AsyncGitNotification::Log => self.update()?,
 				AsyncGitNotification::Diff => self.update_diff()?,
+				AsyncGitNotification::Delta => {
+					self.diff.apply_delta();
+				}
 				_ => (),
 			}
 		}

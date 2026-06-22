@@ -5,7 +5,13 @@ use super::{
 };
 use crate::{
 	app::Environment,
-	components::{CommandInfo, Component, EventState},
+	components::{
+		async_delta::{
+			pad_line_bg as delta_pad_line_bg, AsyncDelta,
+			DeltaParams, ProcessedDelta,
+		},
+		CommandInfo, Component, EventState,
+	},
 	keys::{key_match, GituiKeyEvent, SharedKeyConfig},
 	options::SharedOptions,
 	queue::{Action, InternalEvent, NeedsUpdate, Queue, ResetItem},
@@ -26,7 +32,7 @@ use ratatui::{
 	layout::{
 		Constraint, Direction as RatatuiDirection, Layout, Rect,
 	},
-	style::{Color, Style},
+	style::Color,
 	symbols,
 	text::{Line, Span},
 	widgets::{Block, Borders, Paragraph},
@@ -37,7 +43,6 @@ use std::{
 	borrow::Cow,
 	cell::{Cell, RefCell},
 	cmp,
-	collections::HashMap,
 	path::Path,
 };
 
@@ -171,12 +176,12 @@ pub struct DiffComponent {
 	is_immutable: bool,
 	options: SharedOptions,
 	diff_mode: DiffMode,
-	delta_output: RefCell<Option<Vec<Line<'static>>>>,
 	delta_line_level_bgs: RefCell<Vec<Option<Color>>>,
 	delta_line_hunks: RefCell<Vec<usize>>,
 	delta_line_positions: RefCell<Vec<Option<DiffLinePosition>>>,
 	last_delta_width: Cell<u16>,
 	delta_display_lines: RefCell<Vec<Line<'static>>>,
+	async_delta: AsyncDelta,
 }
 
 impl DiffComponent {
@@ -200,12 +205,12 @@ impl DiffComponent {
 			repo: env.repo.clone(),
 			options: env.options.clone(),
 			diff_mode: env.options.borrow().diff_mode(),
-			delta_output: RefCell::new(None),
 			delta_line_level_bgs: RefCell::new(Vec::new()),
 			delta_line_hunks: RefCell::new(Vec::new()),
 			delta_line_positions: RefCell::new(Vec::new()),
 			last_delta_width: Cell::new(0),
 			delta_display_lines: RefCell::new(Vec::new()),
+			async_delta: AsyncDelta::new(&env.sender_git),
 		}
 	}
 	///
@@ -223,7 +228,6 @@ impl DiffComponent {
 	pub fn clear(&mut self, pending: bool) {
 		self.current = Current::default();
 		self.diff = None;
-		*self.delta_output.borrow_mut() = None;
 		self.delta_line_level_bgs.borrow_mut().clear();
 		self.delta_line_hunks.borrow_mut().clear();
 		self.delta_line_positions.borrow_mut().clear();
@@ -285,7 +289,7 @@ impl DiffComponent {
 					self.vertical_scroll.reset();
 					self.selection = Selection::Single(0);
 				}
-				self.run_delta();
+				self.request_delta();
 				// Clamp selection to new display line count
 				let max = self
 					.delta_display_lines
@@ -1044,446 +1048,87 @@ impl DiffComponent {
 			.is_ok_and(|s| s.success())
 	}
 
-	/// Run `git diff | delta` and return parsed lines with per-line bg, or `None` on failure.
-	#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
-	fn run_delta_subprocess(
-		repo: &RepoPathRef,
-		path: &str,
-		diff_type: &DiffType,
-		width: u16,
-		side_by_side: bool,
-	) -> Option<(Vec<Line<'static>>, Vec<Option<Color>>)> {
-		if path.is_empty() {
-			return None;
-		}
-
-		let repo_ref = repo.borrow();
-		let work_dir = repo_ref
-			.workdir()
-			.map(std::path::Path::to_path_buf)
-			.or_else(|| {
-				let output = std::process::Command::new("git")
-					.args(["rev-parse", "--show-toplevel"])
-					.current_dir(repo_ref.gitpath())
-					.output()
-					.ok()?;
-				if output.status.success() {
-					let path =
-						String::from_utf8_lossy(&output.stdout);
-					Some(std::path::PathBuf::from(path.trim()))
-				} else {
-					None
-				}
-			});
-		drop(repo_ref);
-
-		let work_dir = work_dir?;
-
-		let mut git_cmd = std::process::Command::new("git");
-		match diff_type {
-			DiffType::WorkDir => {
-				git_cmd.arg("diff");
-				git_cmd.arg(path);
-			}
-			DiffType::Stage => {
-				git_cmd.arg("diff");
-				git_cmd.arg("--cached");
-				git_cmd.arg(path);
-			}
-			DiffType::Commit(commit_id) => {
-				git_cmd.arg("diff");
-				// Use parent..commit to show changes IN the commit.
-				// For the first commit (no parent), fall back to empty tree.
-				let range = format!("{commit_id}^..{commit_id}");
-				git_cmd.arg(&range);
-				git_cmd.arg("--");
-				git_cmd.arg(path);
-			}
-			DiffType::Commits(ids) => {
-				git_cmd.arg("diff");
-				git_cmd.arg(ids.old.to_string());
-				git_cmd.arg(ids.new.to_string());
-				git_cmd.arg("--");
-				git_cmd.arg(path);
-			}
-		}
-
-		let mut git_output =
-			git_cmd.current_dir(&work_dir).output().ok()?;
-		if !git_output.status.success() {
-			// For commit diffs, the ^.. syntax fails on the first commit (no parent).
-			// Fall back to diffing against the empty tree.
-			if let DiffType::Commit(commit_id) = diff_type {
-				let empty_tree =
-					"4b825dc642cb6eb9a060e54bf899d15f3f9381b1";
-				let fallback = std::process::Command::new("git")
-					.args([
-						"diff",
-						empty_tree,
-						&commit_id.to_string(),
-						"--",
-						path,
-					])
-					.current_dir(&work_dir)
-					.output();
-				if let Ok(output) = fallback {
-					if output.status.success() {
-						git_output = output;
-					} else {
-						return None;
-					}
-				} else {
-					return None;
-				}
-			} else {
-				return None;
-			}
-		}
-
-		if git_output.stdout.is_empty() {
-			log::debug!(
-				"delta: git diff produced empty output for {diff_type:?} {path}"
-			);
-		}
-
-		// For untracked files, git diff produces empty output.
-		// Fall back to diffing against /dev/null to show the full file as added.
-		let git_output = if git_output.stdout.is_empty()
-			&& matches!(diff_type, DiffType::WorkDir)
-		{
-			let fallback = std::process::Command::new("git")
-				.args(["diff", "--no-index", "/dev/null", path])
-				.current_dir(&work_dir)
-				.output()
-				.ok()?;
-			if fallback.status.success()
-				|| fallback.status.code() == Some(1)
-			{
-				// diff --no-index exits 1 when files differ
-				fallback
-			} else {
-				git_output
-			}
-		} else {
-			git_output
+	/// Request a delta render. On cache hit, applies the result
+	/// synchronously. On miss, spawns a background job; when it
+	/// finishes, the tab calls `apply_delta()` to apply the result.
+	fn request_delta(&self) {
+		let params = DeltaParams {
+			path: self.current.path.clone(),
+			diff_type: self.current.diff_type.clone(),
+			width: self.current_size.get().0,
+			side_by_side: self.diff_mode == DiffMode::DeltaSideBySide,
 		};
-
-		if git_output.stdout.is_empty() {
-			log::debug!(
-				"delta: no diff content for {diff_type:?} {path}"
-			);
-			return None;
-		}
-
-		let mut delta_args = vec![
-			"--file-style".to_string(),
-			"omit".to_string(),
-			"--line-numbers".to_string(),
-		];
-		if side_by_side {
-			// Side-by-side: delta controls layout, needs panel width
-			delta_args.push("--width".to_string());
-			delta_args.push(width.max(20).to_string());
-			delta_args.push("--side-by-side".to_string());
-		}
-
-		let delta_bytes = if let Ok(mut child) =
-			std::process::Command::new("delta")
-				.args(&delta_args)
-				.current_dir(&work_dir)
-				.stdin(std::process::Stdio::piped())
-				.stdout(std::process::Stdio::piped())
-				.stderr(std::process::Stdio::null())
-				.spawn()
+		let repo = self.repo.borrow().clone();
+		let diff = self.diff.clone();
+		if let Some(result) =
+			self.async_delta.request(params, repo, diff)
 		{
-			// Write stdin in a separate thread to avoid deadlock:
-			// If delta's stdout pipe buffer fills up, delta blocks
-			// on write(stdout). If we're still blocking on
-			// write_all(stdin), we have a classic pipe deadlock.
-			let stdin_data = git_output.stdout;
-			let mut child_stdin = child.stdin.take();
-			let stdin_thread = std::thread::spawn(move || {
-				if let Some(ref mut stdin) = child_stdin {
-					use std::io::Write;
-					let _ = stdin.write_all(&stdin_data);
-				}
-			});
-			let output = child.wait_with_output().ok();
-			let _ = stdin_thread.join();
-			output.filter(|o| o.status.success()).map(|o| o.stdout)
+			self.apply_delta_result(result);
+			self.last_delta_width.set(self.current_size.get().0);
 		} else {
-			log::error!("delta: failed to spawn delta process");
-			None
-		};
-
-		if delta_bytes.is_none() {
-			log::error!("delta: delta process failed or produced no output for {diff_type:?} {path}");
-		}
-
-		delta_bytes.map(|bytes| {
-			let text = String::from_utf8_lossy(&bytes);
-			crate::ansi::ansi_to_lines(&text)
-		})
-	}
-
-	/// Run delta and store the result
-	fn run_delta(&self) {
-		let result = Self::run_delta_subprocess(
-			&self.repo,
-			&self.current.path,
-			&self.current.diff_type,
-			self.current_size.get().0,
-			self.diff_mode == DiffMode::DeltaSideBySide,
-		);
-		if let Some((lines, bgs)) = result {
-			*self.delta_output.borrow_mut() = Some(lines);
-			*self.delta_line_level_bgs.borrow_mut() = bgs;
-		} else {
-			*self.delta_output.borrow_mut() = None;
-			self.delta_line_level_bgs.borrow_mut().clear();
-		}
-		self.rebuild_delta_maps();
-		self.last_delta_width.set(self.current_size.get().0);
-	}
-
-	/// Build mappings from delta display lines to hunk indices and diff line positions.
-	fn rebuild_delta_maps(&self) {
-		let mut hunk_map = Vec::new();
-		let mut pos_map: Vec<Option<DiffLinePosition>> = Vec::new();
-		let delta = self.delta_output.borrow();
-
-		// Build two lookups: one for old_lineno (delete lines), one for new_lineno (add/context lines)
-		// Delta non-side-by-side format: `old_lineno ⋮ new_lineno │ content`
-		// - Delete lines have old_lineno only (new_lineno is empty)
-		// - Add lines have new_lineno only (old_lineno is empty)
-		// - Context lines have both
-		let (old_lineno_lookup, new_lineno_lookup): (
-			HashMap<u32, DiffLinePosition>,
-			HashMap<u32, DiffLinePosition>,
-		) = self.diff.as_ref().map_or_else(
-			|| (HashMap::new(), HashMap::new()),
-			|diff| {
-				let mut old_map = HashMap::new();
-				let mut new_map = HashMap::new();
-				for hunk in &diff.hunks {
-					for line in &hunk.lines {
-						match line.line_type {
-							DiffLineType::Add => {
-								if let Some(n) =
-									line.position.new_lineno
-								{
-									new_map.insert(n, line.position);
-								}
-							}
-							DiffLineType::Delete => {
-								if let Some(n) =
-									line.position.old_lineno
-								{
-									old_map.insert(n, line.position);
-								}
-							}
-							_ => {
-								// Context lines: map both old and new
-								if let Some(n) =
-									line.position.old_lineno
-								{
-									old_map
-										.entry(n)
-										.or_insert(line.position);
-								}
-								if let Some(n) =
-									line.position.new_lineno
-								{
-									new_map
-										.entry(n)
-										.or_insert(line.position);
-								}
-							}
-						}
-					}
-				}
-				(old_map, new_map)
-			},
-		);
-
-		if let Some(lines) = delta.as_ref() {
-			let mut current_hunk: usize = 0;
-			let mut first_separator_seen = false;
-			for line in lines {
-				let text: String = line
-					.spans
-					.iter()
-					.map(|s| s.content.as_ref())
-					.collect();
-				let trimmed = text.trim();
-
-				// Hunk mapping
-				let is_top_separator = !trimmed.is_empty()
-					&& trimmed.ends_with('\u{2510}')
-					&& trimmed.chars().all(|c| {
-						c == '\u{2500}'
-							|| c == '\u{2510}' || c.is_whitespace()
-					});
-				if is_top_separator {
-					if first_separator_seen {
-						current_hunk += 1;
-					}
-					first_separator_seen = true;
-				}
-				hunk_map.push(current_hunk);
-
-				// Line position mapping: parse old and new line numbers from gutter spans
-				// Delta non-side-by-side format: `old_lineno ⋮ new_lineno │ content`
-				let (old_lineno, new_lineno) =
-					Self::parse_delta_line_numbers(line);
-				let pos = new_lineno.map_or_else(
-					|| {
-						old_lineno.and_then(|old_n| {
-							old_lineno_lookup.get(&old_n).copied()
-						})
-					},
-					|new_n| new_lineno_lookup.get(&new_n).copied(),
-				);
-				pos_map.push(pos);
-			}
-		}
-		let pos_count =
-			pos_map.iter().filter(|p| p.is_some()).count();
-		log::debug!(
-			"rebuild_delta_maps: {} lines, {} hunks, {} positions with line numbers",
-			hunk_map.len(),
-			hunk_map.iter().max().map_or(0, |h| h + 1),
-			pos_count
-		);
-		*self.delta_line_hunks.borrow_mut() = hunk_map;
-		*self.delta_line_positions.borrow_mut() = pos_map;
-		drop(delta);
-
-		// Build wrapped display lines for non-side-by-side delta
-		self.rebuild_display_lines();
-	}
-
-	/// Wrap delta output lines into display lines based on current panel width.
-	fn rebuild_display_lines(&self) {
-		let panel_width = usize::from(self.current_size.get().0);
-		let is_sbs = self.diff_mode == DiffMode::DeltaSideBySide;
-
-		if is_sbs || panel_width == 0 {
-			// Side-by-side: display lines = delta lines (no wrapping)
-			let delta = self.delta_output.borrow();
-			let lines =
-				delta.as_ref().map_or_else(Vec::new, Clone::clone);
-			*self.delta_display_lines.borrow_mut() = lines;
-			return;
-		}
-
-		let delta = self.delta_output.borrow();
-		let Some(lines) = delta.as_ref() else {
+			// Cache miss: clear stale display lines so draw() shows
+			// the "Loading..." indicator while the background job runs.
 			self.delta_display_lines.borrow_mut().clear();
-			return;
-		};
-
-		let hunk_map = self.delta_line_hunks.borrow();
-		let pos_map = self.delta_line_positions.borrow();
-		let line_level_bgs = self.delta_line_level_bgs.borrow();
-
-		let mut display_lines = Vec::new();
-		let mut display_hunks = Vec::new();
-		let mut display_positions = Vec::new();
-
-		for (idx, line) in lines.iter().enumerate() {
-			// ansi_to_lines adds a trailing space for \x1b[K]
-			// (erase-in-line) to make bg visible. When the line
-			// already fills the panel width, this extra space
-			// causes a spurious wrap. Strip it only in that case.
-			let content_len: usize = line
-				.spans
-				.iter()
-				.map(|s| s.content.chars().count())
-				.sum();
-			let trimmed_line = if content_len > panel_width {
-				let mut spans: Vec<Span<'static>> =
-					line.spans.clone();
-				while spans
-					.last()
-					.is_some_and(|s| s.content.trim().is_empty())
-				{
-					spans.pop();
-				}
-				Line::from(spans)
-			} else {
-				line.clone()
-			};
-			// Use the line-level bg detected by the ANSI parser.
-			// This correctly distinguishes line-level bg (red/green)
-			// from word-diff highlight bg (gray), even when word-diff
-			// covers more characters than the line-level bg.
-			let dominant_bg =
-				line_level_bgs.get(idx).copied().flatten();
-			let wrapped = Self::wrap_line(&trimmed_line, panel_width);
-			for wline in wrapped {
-				let padded = Self::pad_line_bg(
-					wline,
-					panel_width,
-					false,
-					dominant_bg,
-				);
-				display_hunks
-					.push(hunk_map.get(idx).copied().unwrap_or(0));
-				display_positions
-					.push(pos_map.get(idx).copied().unwrap_or(None));
-				display_lines.push(padded);
-			}
 		}
+	}
 
-		*self.delta_display_lines.borrow_mut() = display_lines;
-		// Overwrite hunk/pos maps to be display-indexed
-		drop(delta);
-		drop(hunk_map);
-		drop(pos_map);
-		drop(line_level_bgs);
+	/// Apply a processed delta result (from cache or background job).
+	/// Pure assignment — all heavy lifting was done on the worker thread.
+	fn apply_delta_result(&self, result: ProcessedDelta) {
+		let ProcessedDelta {
+			display_lines,
+			display_hunks,
+			display_positions,
+			line_level_bgs,
+		} = result;
+		*self.delta_line_level_bgs.borrow_mut() = line_level_bgs;
 		*self.delta_line_hunks.borrow_mut() = display_hunks;
 		*self.delta_line_positions.borrow_mut() = display_positions;
+		*self.delta_display_lines.borrow_mut() = display_lines;
 	}
 
-	/// Parse old and new line numbers from delta gutter spans.
-	/// Delta non-side-by-side format: `old_lineno ⋮ new_lineno │ content`
-	/// Returns (`old_lineno`, `new_lineno`) — either may be `None` if empty.
-	fn parse_delta_line_numbers(
-		line: &Line<'_>,
-	) -> (Option<u32>, Option<u32>) {
-		let spans = &line.spans;
-		// Need at least: old_lineno, ⋮, new_lineno, │
-		if spans.len() < 4 {
-			return (None, None);
-		}
-		// First span: old line number (may be empty for add lines)
-		let old_num_text = spans[0].content.trim();
-		// Second span: ⋮ separator
-		let sep = spans[1].content.trim();
-		if sep != "\u{22ee}" {
-			return (None, None);
-		}
-		// Third span: new line number (may be empty for delete lines)
-		let new_num_text = spans[2].content.trim();
-
-		let old_lineno = if old_num_text.is_empty()
-			|| !old_num_text.chars().all(|c| c.is_ascii_digit())
-		{
-			None
-		} else {
-			old_num_text.parse().ok()
+	/// Called by the tab when `AsyncGitNotification::Delta` arrives.
+	/// Applies the pending result if it matches the current params.
+	pub fn apply_delta(&mut self) {
+		let params = DeltaParams {
+			path: self.current.path.clone(),
+			diff_type: self.current.diff_type.clone(),
+			width: self.current_size.get().0,
+			side_by_side: self.diff_mode == DiffMode::DeltaSideBySide,
 		};
-		let new_lineno = if new_num_text.is_empty()
-			|| !new_num_text.chars().all(|c| c.is_ascii_digit())
+		if let Some(result) =
+			self.async_delta.take_if_matches(&params)
 		{
-			None
-		} else {
-			new_num_text.parse().ok()
-		};
-
-		(old_lineno, new_lineno)
+			self.apply_delta_result(result);
+			self.last_delta_width.set(self.current_size.get().0);
+			// Clamp selection to new display line count
+			let max = self
+				.delta_display_lines
+				.borrow()
+				.len()
+				.saturating_sub(1);
+			if let Selection::Single(line) = &self.selection {
+				if *line > max {
+					self.selection = Selection::Single(max);
+				}
+			}
+			let idx = self.selection.get_end();
+			let hunk_map = self.delta_line_hunks.borrow();
+			let max_hunk = self
+				.diff
+				.as_ref()
+				.map_or(0, |d| d.hunks.len().saturating_sub(1));
+			self.selected_hunk =
+				hunk_map.get(idx).copied().map(|h| h.min(max_hunk));
+		}
 	}
+
+	/// Returns true if a delta render is in-flight for the current
+	/// params.
+	pub fn is_delta_pending(&self) -> bool {
+		self.async_delta.is_pending()
+	}
+
 	fn refresh_delta_if_width_changed(&self) {
 		if !self.is_delta_preview() {
 			return;
@@ -1495,7 +1140,7 @@ impl DiffComponent {
 		{
 			return;
 		}
-		self.run_delta();
+		self.request_delta();
 	}
 
 	/// Cycle: `Unified` → `SideBySide` → `Delta` → `DeltaSideBySide` → `Unified`
@@ -1518,9 +1163,8 @@ impl DiffComponent {
 		self.options.borrow_mut().set_diff_mode(self.diff_mode);
 
 		if self.is_delta_preview() {
-			self.run_delta();
+			self.request_delta();
 		} else {
-			*self.delta_output.borrow_mut() = None;
 			self.delta_line_level_bgs.borrow_mut().clear();
 			self.delta_line_hunks.borrow_mut().clear();
 			self.delta_line_positions.borrow_mut().clear();
@@ -1766,194 +1410,6 @@ impl DiffComponent {
 		result
 	}
 
-	/// Wrap a styled `Line` into multiple display lines at `width` characters.
-	fn wrap_line(
-		line: &Line<'static>,
-		width: usize,
-	) -> Vec<Line<'static>> {
-		if width == 0 {
-			return vec![line.clone()];
-		}
-
-		let mut result = Vec::new();
-		let mut current_spans: Vec<Span<'static>> = Vec::new();
-		let mut current_width = 0;
-
-		for span in &line.spans {
-			let mut remaining = span.content.as_ref();
-			let style = span.style;
-
-			loop {
-				if remaining.is_empty() {
-					break;
-				}
-				let space = width.saturating_sub(current_width);
-				if space == 0 {
-					result.push(Line::from(std::mem::take(
-						&mut current_spans,
-					)));
-					current_width = 0;
-					continue;
-				}
-
-				let char_count = remaining.chars().count();
-				if char_count <= space {
-					current_spans.push(Span::styled(
-						Cow::Owned(remaining.to_string()),
-						style,
-					));
-					current_width += char_count;
-					break;
-				}
-
-				// Find byte offset after `space` characters
-				let mut byte_end = remaining.len();
-				for (idx, (i, _)) in
-					remaining.char_indices().enumerate()
-				{
-					if idx == space {
-						byte_end = i;
-						break;
-					}
-				}
-				current_spans.push(Span::styled(
-					Cow::Owned(remaining[..byte_end].to_string()),
-					style,
-				));
-				remaining = &remaining[byte_end..];
-				result.push(Line::from(std::mem::take(
-					&mut current_spans,
-				)));
-				current_width = 0;
-			}
-		}
-
-		if !current_spans.is_empty() {
-			result.push(Line::from(current_spans));
-		}
-
-		if result.is_empty() {
-			result.push(Line::from(""));
-		}
-
-		result
-	}
-
-	/// Pad a line's last span with spaces if it has a background color,
-	/// so the background extends to the full panel width.
-	///
-	/// `dominant_bg` is the bg color that covers the most characters in
-	/// the original (pre-wrap) line. When delta emits word-highlight
-	/// spans (gray bg) inside a deleted/added line (red/green bg),
-	/// the dominant bg should be used for padding, not the word-highlight.
-	///
-	/// When `is_sbs` is true, the line contains both left and right
-	/// panels from delta side-by-side output. We must not let bg/fg
-	/// from the left panel bleed into the right panel.
-	fn pad_line_bg(
-		mut line: Line<'static>,
-		width: usize,
-		is_sbs: bool,
-		dominant_bg: Option<Color>,
-	) -> Line<'static> {
-		let content_width: usize = line
-			.spans
-			.iter()
-			.map(|s| s.content.chars().count())
-			.sum();
-		let bg_idx =
-			line.spans.iter().rposition(|s| s.style.bg.is_some());
-		let Some(idx) = bg_idx else {
-			return line;
-		};
-		// Determine the bg style to use for padding and trailing spans.
-		// Prefer the dominant bg from the original line (passed in),
-		// which correctly handles word-highlight spans (gray bg inside
-		// red/green bg lines). When dominant_bg is set but not present
-		// on this sub-line (e.g. after wrap), use it directly.
-		// Otherwise fall back to the last bg span's style.
-		let bg_style = if let Some(dom) = dominant_bg {
-			if let Some(s) = line.spans[..=idx]
-				.iter()
-				.find(|s| s.style.bg == Some(dom))
-			{
-				s.style
-			} else {
-				// dominant bg not on this sub-line — use it with the
-				// inherited fg from the line's bg spans (if any)
-				let fg = line.spans[..=idx]
-					.iter()
-					.rev()
-					.find(|s| {
-						s.style.bg.is_some() && s.style.fg.is_some()
-					})
-					.and_then(|s| s.style.fg);
-				let mut s = Style::default().bg(dom);
-				if let Some(fg) = fg {
-					s = s.fg(fg);
-				}
-				s
-			}
-		} else {
-			line.spans[idx].style
-		};
-		let inherited_fg = line.spans[..=idx]
-			.iter()
-			.rev()
-			.find(|s| s.style.bg.is_some() && s.style.fg.is_some())
-			.and_then(|s| s.style.fg);
-
-		// In SBS mode, find the panel boundary after the last bg span.
-		let boundary = if is_sbs {
-			line.spans[idx + 1..]
-				.iter()
-				.position(|s| {
-					s.style.bg.is_none()
-						&& (matches!(
-							s.style.fg,
-							Some(Color::Indexed(_))
-						) || s.style.fg == Some(Color::Blue)
-							|| s.content
-								.chars()
-								.any(|c| c == '\u{2502}'))
-				})
-				.map(|p| idx + 1 + p)
-		} else {
-			None
-		};
-
-		let apply_end = boundary.unwrap_or(line.spans.len());
-		for span in &mut line.spans[idx + 1..apply_end] {
-			span.style =
-				span.style.bg(bg_style.bg.expect("checked above"));
-			if let Some(fg) = inherited_fg {
-				span.style = span.style.fg(fg);
-			}
-		}
-		let pad_limit = if is_sbs {
-			boundary.map_or(content_width, |b| {
-				line.spans[..b]
-					.iter()
-					.map(|s| s.content.chars().count())
-					.sum()
-			})
-		} else {
-			width
-		};
-		let left_panel_width: usize = line.spans[..apply_end]
-			.iter()
-			.map(|s| s.content.chars().count())
-			.sum();
-		if left_panel_width < pad_limit {
-			let pad = pad_limit - left_panel_width;
-			line.spans.insert(
-				apply_end,
-				Span::styled(Cow::Owned(" ".repeat(pad)), bg_style),
-			);
-		}
-		line
-	}
-
 	fn draw_delta(
 		&self,
 		f: &mut Frame,
@@ -1982,7 +1438,7 @@ impl DiffComponent {
 						let is_sbs = self.diff_mode
 							== DiffMode::DeltaSideBySide;
 						if is_sbs {
-							Self::pad_line_bg(
+							delta_pad_line_bg(
 								line.clone(),
 								panel_width,
 								true,
@@ -2378,6 +1834,10 @@ impl DrawableComponent for DiffComponent {
 			}
 		);
 
+		let delta_pending = self.is_delta_preview()
+			&& self.is_delta_pending()
+			&& self.delta_display_lines.borrow().is_empty();
+
 		if self.diff_mode == DiffMode::SideBySide && !self.pending {
 			self.draw_side_by_side(
 				f,
@@ -2386,10 +1846,13 @@ impl DrawableComponent for DiffComponent {
 				current_height,
 				&hunk_info,
 			)?;
-		} else if self.is_delta_preview() && !self.pending {
+		} else if self.is_delta_preview()
+			&& !self.pending
+			&& !delta_pending
+		{
 			self.draw_delta(f, r, &title, current_height);
 		} else {
-			let txt = if self.pending {
+			let txt = if self.pending || delta_pending {
 				vec![Line::from(vec![Span::styled(
 					Cow::from(strings::loading_text(
 						&self.key_config,
@@ -2673,6 +2136,7 @@ impl Component for DiffComponent {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::components::async_delta::wrap_line as delta_wrap_line;
 	use crate::ui::style::Theme;
 	use ratatui::style::{Color, Style};
 	use std::io::Write;
@@ -2746,7 +2210,7 @@ mod tests {
 	#[test]
 	fn test_wrap_line_exact_width() {
 		let line = Line::from(Span::raw("a".repeat(40)));
-		let wrapped = DiffComponent::wrap_line(&line, 40);
+		let wrapped = delta_wrap_line(&line, 40);
 		assert_eq!(
 			wrapped.len(),
 			1,
@@ -2758,7 +2222,7 @@ mod tests {
 	#[test]
 	fn test_wrap_line_over_width() {
 		let line = Line::from(Span::raw("a".repeat(41)));
-		let wrapped = DiffComponent::wrap_line(&line, 40);
+		let wrapped = delta_wrap_line(&line, 40);
 		assert_eq!(wrapped.len(), 2);
 	}
 
@@ -2768,7 +2232,7 @@ mod tests {
 			Span::raw("a".repeat(20)),
 			Span::raw("b".repeat(20)),
 		]);
-		let wrapped = DiffComponent::wrap_line(&line, 40);
+		let wrapped = delta_wrap_line(&line, 40);
 		assert_eq!(
 			wrapped.len(),
 			1,
@@ -2801,7 +2265,7 @@ mod tests {
 		} else {
 			line.clone()
 		};
-		DiffComponent::wrap_line(&trimmed_line, panel_width)
+		delta_wrap_line(&trimmed_line, panel_width)
 	}
 
 	#[test]
@@ -2882,8 +2346,7 @@ mod tests {
 			Span::styled(Cow::Owned("hello".to_string()), bg_style),
 			Span::styled(Cow::Owned("".to_string()), reset_style),
 		]);
-		let padded =
-			DiffComponent::pad_line_bg(line, 10, false, None);
+		let padded = delta_pad_line_bg(line, 10, false, None);
 		let total_width: usize = padded
 			.spans
 			.iter()
@@ -2911,7 +2374,7 @@ mod tests {
 			Span::styled(Cow::Owned("C".repeat(230)), bg_style),
 			Span::styled(Cow::Owned("".to_string()), reset_style),
 		]);
-		let wrapped = DiffComponent::wrap_line(&line, 80);
+		let wrapped = delta_wrap_line(&line, 80);
 		// Should wrap into ceil(240/80)=3 sublines
 		assert_eq!(
 			wrapped.len(),
@@ -2926,12 +2389,8 @@ mod tests {
 				.iter()
 				.map(|s| s.content.chars().count())
 				.sum();
-			let padded = DiffComponent::pad_line_bg(
-				subline.clone(),
-				80,
-				false,
-				None,
-			);
+			let padded =
+				delta_pad_line_bg(subline.clone(), 80, false, None);
 			let pw: usize = padded
 				.spans
 				.iter()
@@ -2969,8 +2428,7 @@ mod tests {
 			),
 			Span::styled(Cow::Owned("→".to_string()), reset_style),
 		]);
-		let padded =
-			DiffComponent::pad_line_bg(line, 10, false, None);
+		let padded = delta_pad_line_bg(line, 10, false, None);
 		let arrow =
 			padded.spans.iter().find(|s| s.content.as_ref() == "→");
 		assert!(arrow.is_some(), "should have → span");
@@ -3027,8 +2485,7 @@ mod tests {
 				blue_gutter,
 			),
 		]);
-		let padded =
-			DiffComponent::pad_line_bg(line.clone(), 80, true, None);
+		let padded = delta_pad_line_bg(line.clone(), 80, true, None);
 		// No gutter/decoration span should have left panel's red bg
 		for span in &padded.spans {
 			if span.style.bg.is_none()
@@ -3112,8 +2569,7 @@ mod tests {
 				green_bg,
 			),
 		]);
-		let padded =
-			DiffComponent::pad_line_bg(line.clone(), 80, true, None);
+		let padded = delta_pad_line_bg(line.clone(), 80, true, None);
 		// The last bg span should be green
 		let last_bg_span = padded
 			.spans
@@ -3151,12 +2607,8 @@ mod tests {
 		);
 		let (parsed, _) = crate::ansi::ansi_to_lines(input);
 		assert_eq!(parsed.len(), 1);
-		let padded = DiffComponent::pad_line_bg(
-			parsed[0].clone(),
-			80,
-			true,
-			None,
-		);
+		let padded =
+			delta_pad_line_bg(parsed[0].clone(), 80, true, None);
 		// No span with indexed fg should have left panel's red bg
 		for span in &padded.spans {
 			if matches!(span.style.fg, Some(Color::Indexed(_))) {
@@ -3182,12 +2634,8 @@ mod tests {
 		);
 		let (parsed, _) = crate::ansi::ansi_to_lines(input);
 		assert_eq!(parsed.len(), 1);
-		let padded = DiffComponent::pad_line_bg(
-			parsed[0].clone(),
-			80,
-			true,
-			None,
-		);
+		let padded =
+			delta_pad_line_bg(parsed[0].clone(), 80, true, None);
 		// Every │ span and every indexed-fg span must NOT have red bg
 		for span in &padded.spans {
 			if span.content.chars().any(|c| c == '\u{2502}') {
@@ -3221,12 +2669,8 @@ mod tests {
 		);
 		let (parsed, _) = crate::ansi::ansi_to_lines(input);
 		assert_eq!(parsed.len(), 1);
-		let padded = DiffComponent::pad_line_bg(
-			parsed[0].clone(),
-			80,
-			true,
-			None,
-		);
+		let padded =
+			delta_pad_line_bg(parsed[0].clone(), 80, true, None);
 		// Find the green bg span (right panel)
 		let green_bg = padded
 			.spans
@@ -3265,8 +2709,7 @@ mod tests {
 			Span::styled(Cow::Owned("\u{21b5}".to_string()), reset),
 		]);
 		// Non-SBS: arrow gets bg
-		let padded =
-			DiffComponent::pad_line_bg(line.clone(), 20, false, None);
+		let padded = delta_pad_line_bg(line.clone(), 20, false, None);
 		let arrow = padded
 			.spans
 			.iter()
@@ -3291,7 +2734,7 @@ mod tests {
 			// Word highlight span (the only bg on this sub-line)
 			Span::styled(Cow::Owned("ANGED".to_string()), gray_bg),
 		]);
-		let padded = DiffComponent::pad_line_bg(
+		let padded = delta_pad_line_bg(
 			line,
 			35,
 			false,
