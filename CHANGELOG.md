@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.2] - 2026-06-22
+
+### Fixed
+* delta diff preview in the Status tab no longer shows stale content after stage/unstage hunk, stage/unstage lines, reset hunk, or external file edits — the async delta cache key now includes the `FileDiff` hash, so any content change invalidates the cached render even when `path`/`diff_type`/`width` are unchanged
+
 ## [v1.5] - 2026-06-18
 
 ### Changed

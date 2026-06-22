@@ -21,12 +21,18 @@ use ratatui::{
 use crate::ansi::ansi_to_lines;
 
 /// Parameters identifying a delta render request.
+///
+/// `diff_hash` is the hash of the `FileDiff` (from `asyncgit::hash`).
+/// Including it ensures the cache invalidates when the file's diff
+/// content changes (stage/unstage, external edits) even though
+/// `path`/`diff_type`/`width` stay the same.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DeltaParams {
 	pub path: String,
 	pub diff_type: asyncgit::DiffType,
 	pub width: u16,
 	pub side_by_side: bool,
+	pub diff_hash: u64,
 }
 
 impl Hash for DeltaParams {
@@ -35,6 +41,7 @@ impl Hash for DeltaParams {
 		self.diff_type.hash(state);
 		self.width.hash(state);
 		self.side_by_side.hash(state);
+		self.diff_hash.hash(state);
 	}
 }
 

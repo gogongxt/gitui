@@ -1057,6 +1057,7 @@ impl DiffComponent {
 			diff_type: self.current.diff_type.clone(),
 			width: self.current_size.get().0,
 			side_by_side: self.diff_mode == DiffMode::DeltaSideBySide,
+			diff_hash: self.current.hash,
 		};
 		let repo = self.repo.borrow().clone();
 		let diff = self.diff.clone();
@@ -1095,6 +1096,7 @@ impl DiffComponent {
 			diff_type: self.current.diff_type.clone(),
 			width: self.current_size.get().0,
 			side_by_side: self.diff_mode == DiffMode::DeltaSideBySide,
+			diff_hash: self.current.hash,
 		};
 		if let Some(result) =
 			self.async_delta.take_if_matches(&params)
