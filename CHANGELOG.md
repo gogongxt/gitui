@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.4] - 2026-06-23
+
+### Fixed
+* `test_delta_preserves_cursor_on_content_change` no longer fails on CI runners without the `delta` binary installed — the test now skips cleanly when `delta` is not on `PATH` instead of asserting on `is_delta_preview()` after `toggle_diff_mode()` resets to `Unified`. Unblocks the CD release pipeline.
+
 ## [v2.3] - 2026-06-23
 
 ### Fixed
