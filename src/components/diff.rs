@@ -2197,6 +2197,10 @@ mod tests {
 	#[test]
 	fn test_delta_preserves_cursor_on_content_change() {
 		use tempfile::TempDir;
+		if !DiffComponent::is_delta_available() {
+			eprintln!("skipping: delta binary not on PATH");
+			return;
+		}
 		let td = TempDir::new().unwrap();
 
 		// Init git repo
