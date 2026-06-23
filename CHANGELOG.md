@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.3] - 2026-06-23
+
+### Fixed
+* delta diff mode no longer loses cursor position or flickers "Loading..." after stage/unstage hunk or stage/unstage lines — same-file content changes now render synchronously via `AsyncDelta::request_sync`, while file switches keep the async path to avoid blocking the event loop. Also stops `request_delta()` from clearing `delta_display_lines` on cache miss, so the previous output stays visible during background re-renders.
+
 ## [v2.2] - 2026-06-22
 
 ### Fixed

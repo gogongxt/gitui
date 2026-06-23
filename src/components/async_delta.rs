@@ -190,6 +190,28 @@ impl AsyncDelta {
 		None
 	}
 
+	/// Synchronous variant for same-file content changes (stage/unstage),
+	/// where preserving cursor position and avoiding flicker matters more
+	/// than non-blocking render. Runs `run_delta` on the current thread,
+	/// caches the result, and returns it directly.
+	///
+	/// File switches still go through the async `request()` path.
+	pub fn request_sync(
+		&self,
+		params: &DeltaParams,
+		repo: &RepoPath,
+		diff: Option<&FileDiff>,
+	) -> Option<ProcessedDelta> {
+		let key = hash_params(params);
+		let result = run_delta(repo, params, diff);
+		if let Some(processed) = &result {
+			if let Ok(mut cache) = self.cache.lock() {
+				cache.insert(key, processed.clone());
+			}
+		}
+		result
+	}
+
 	/// Returns true if a request is in-flight.
 	pub fn is_pending(&self) -> bool {
 		self.pending_count.load(Ordering::Relaxed) > 0

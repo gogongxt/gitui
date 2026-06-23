@@ -286,10 +286,15 @@ impl DiffComponent {
 			if self.is_delta_preview() {
 				// In delta mode, preserve selection and rebuild delta maps after
 				if reset_selection {
+					// File switch: async render is fine (cursor resets anyway)
 					self.vertical_scroll.reset();
 					self.selection = Selection::Single(0);
+					self.request_delta();
+				} else {
+					// Same file, content changed (stage/unstage): render
+					// synchronously to preserve cursor and avoid flicker.
+					self.request_delta_sync();
 				}
-				self.request_delta();
 				// Clamp selection to new display line count
 				let max = self
 					.delta_display_lines
@@ -1066,10 +1071,36 @@ impl DiffComponent {
 		{
 			self.apply_delta_result(result);
 			self.last_delta_width.set(self.current_size.get().0);
-		} else {
-			// Cache miss: clear stale display lines so draw() shows
-			// the "Loading..." indicator while the background job runs.
-			self.delta_display_lines.borrow_mut().clear();
+		}
+		// On cache miss, keep showing the previous delta output while
+		// the background job runs. Clearing `delta_display_lines`
+		// here would flash "Loading..." and reset scroll on every
+		// stage/unstage, since `apply_delta` only clamps selection
+		// after the new result arrives.
+	}
+
+	/// Synchronous delta render for same-file content changes
+	/// (stage/unstage hunk, stage/unstage lines). Runs on the current
+	/// thread to preserve cursor and avoid flicker — the async path
+	/// loses scroll position because `apply_delta` runs in a separate
+	/// event tick after the background job finishes.
+	///
+	/// File switches still use `request_delta()` (async).
+	fn request_delta_sync(&self) {
+		let params = DeltaParams {
+			path: self.current.path.clone(),
+			diff_type: self.current.diff_type.clone(),
+			width: self.current_size.get().0,
+			side_by_side: self.diff_mode == DiffMode::DeltaSideBySide,
+			diff_hash: self.current.hash,
+		};
+		let repo = self.repo.borrow();
+		let diff = self.diff.as_ref();
+		if let Some(result) =
+			self.async_delta.request_sync(&params, &repo, diff)
+		{
+			self.apply_delta_result(result);
+			self.last_delta_width.set(self.current_size.get().0);
 		}
 	}
 
@@ -1836,6 +1867,10 @@ impl DrawableComponent for DiffComponent {
 			}
 		);
 
+		// Show "Loading..." only when we have no delta output at all
+		// (first render for this file). While a background re-render is
+		// in flight, keep showing the previous output to avoid flicker
+		// and cursor loss.
 		let delta_pending = self.is_delta_preview()
 			&& self.is_delta_pending()
 			&& self.delta_display_lines.borrow().is_empty();
@@ -2138,12 +2173,175 @@ impl Component for DiffComponent {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::app::Environment;
 	use crate::components::async_delta::wrap_line as delta_wrap_line;
 	use crate::ui::style::Theme;
+	use asyncgit::sync::RepoPath;
 	use ratatui::style::{Color, Style};
 	use std::io::Write;
 	use std::rc::Rc;
 	use tempfile::NamedTempFile;
+
+	/// Build a `FileDiff` by running `git diff` against a real repo.
+	fn make_filediff(
+		repo: &RepoPath,
+		path: &str,
+		is_stage: bool,
+	) -> FileDiff {
+		asyncgit::sync::diff::get_diff(repo, path, is_stage, None)
+			.expect("get_diff failed")
+	}
+
+	/// Reproduces: delta mode, same file, content changes after stage line.
+	/// Cursor should be preserved (clamped to new max), NOT reset to 0.
+	#[test]
+	fn test_delta_preserves_cursor_on_content_change() {
+		use tempfile::TempDir;
+		let td = TempDir::new().unwrap();
+
+		// Init git repo
+		let mut cmd = std::process::Command::new("git");
+		cmd.args(["init"]).current_dir(td.path());
+		cmd.output().unwrap();
+		let mut cmd = std::process::Command::new("git");
+		cmd.args(["config", "user.email", "t@t.t"])
+			.current_dir(td.path());
+		cmd.output().unwrap();
+		let mut cmd = std::process::Command::new("git");
+		cmd.args(["config", "user.name", "t"])
+			.current_dir(td.path());
+		cmd.output().unwrap();
+
+		// Commit initial file
+		let file_path = td.path().join("f.txt");
+		std::fs::write(
+			&file_path,
+			"line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+		).unwrap();
+		let mut cmd = std::process::Command::new("git");
+		cmd.args(["add", "f.txt"]).current_dir(td.path());
+		cmd.output().unwrap();
+		let mut cmd = std::process::Command::new("git");
+		cmd.args(["commit", "-m", "init"]).current_dir(td.path());
+		cmd.output().unwrap();
+
+		// Modify file: change line 2 and add lines at end
+		std::fs::write(
+			&file_path,
+			"line1\nLINE2_CHANGED\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11_NEW\nline12_NEW\n",
+		).unwrap();
+
+		let repo = RepoPath::Path(td.path().to_path_buf());
+
+		// Build DiffComponent in delta mode
+		let env = Environment::test_env();
+		let mut diff_comp = DiffComponent::new(&env, false);
+		// Point the component at our temp repo
+		*diff_comp.repo.borrow_mut() = repo.clone();
+		// Force delta mode: Unified -> SideBySide -> Delta
+		diff_comp.toggle_diff_mode();
+		diff_comp.toggle_diff_mode();
+		assert!(diff_comp.is_delta_preview());
+		diff_comp.current_size.set((120, 40));
+
+		// First update: initial diff (workdir) — file switch path (async).
+		// Simulate the async completion by calling request_sync directly
+		// to populate the display lines, as the event loop isn't running.
+		let diff1 = make_filediff(&repo, "f.txt", false);
+		assert!(!diff1.hunks.is_empty(), "should have diff hunks");
+		diff_comp.update(
+			"f.txt".to_string(),
+			false,
+			diff1.clone(),
+			DiffType::WorkDir,
+		);
+		// Simulate async delta completion by running sync
+		let params1 = DeltaParams {
+			path: "f.txt".to_string(),
+			diff_type: DiffType::WorkDir,
+			width: 120,
+			side_by_side: false,
+			diff_hash: diff_comp.current.hash,
+		};
+		if let Some(result) = diff_comp.async_delta.request_sync(
+			&params1,
+			&repo,
+			Some(&diff1),
+		) {
+			diff_comp.apply_delta_result(result);
+		}
+		let display_len_after_first =
+			diff_comp.delta_display_lines.borrow().len();
+		assert!(
+			display_len_after_first > 0,
+			"should have delta output after first update, got {}",
+			display_len_after_first
+		);
+
+		// Move cursor down 5 times
+		for _ in 0..5 {
+			diff_comp.move_selection(ScrollType::Down);
+		}
+		let sel_after_move = match diff_comp.selection {
+			Selection::Single(n) => n,
+			_ => panic!("expected Single"),
+		};
+		assert_eq!(
+			sel_after_move, 5,
+			"cursor should be at 5 after 5 downs"
+		);
+
+		// Stage all changes — workdir diff becomes empty, stage diff has content.
+		let mut cmd = std::process::Command::new("git");
+		cmd.args(["add", "f.txt"]).current_dir(td.path());
+		cmd.output().unwrap();
+
+		// Modify file again so workdir diff is non-empty but different.
+		std::fs::write(
+			&file_path,
+			"line1\nLINE2_CHANGED\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11_NEW\nline12_NEW\nline13_NEW2\n",
+		).unwrap();
+
+		let diff2 = make_filediff(&repo, "f.txt", false);
+		assert!(
+			!diff2.hunks.is_empty(),
+			"should still have diff hunks"
+		);
+
+		// Call update with new diff — should preserve cursor
+		let hash_before = diff_comp.current.hash;
+		diff_comp.update(
+			"f.txt".to_string(),
+			false,
+			diff2,
+			DiffType::WorkDir,
+		);
+		let hash_after = diff_comp.current.hash;
+		assert_ne!(
+			hash_before, hash_after,
+			"hash should have changed"
+		);
+
+		let sel_after_update = match diff_comp.selection {
+			Selection::Single(n) => n,
+			_ => panic!("expected Single"),
+		};
+		// Cursor should still be at 5 (or clamped to new max if max < 5)
+		let display_len =
+			diff_comp.delta_display_lines.borrow().len();
+		let expected_max = display_len.saturating_sub(1);
+		assert!(
+			sel_after_update <= expected_max,
+			"cursor {} should be <= max {}",
+			sel_after_update,
+			expected_max
+		);
+		assert!(
+			sel_after_update > 0 || expected_max == 0,
+			"cursor was reset to 0 but display has {} lines",
+			display_len
+		);
+	}
 
 	#[test]
 	fn test_line_break() {
