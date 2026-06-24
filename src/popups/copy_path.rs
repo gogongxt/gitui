@@ -25,6 +25,7 @@ pub enum CopyPathType {
 	Filename,
 	Basename,
 	Extension,
+	Content,
 }
 
 impl CopyPathType {
@@ -33,6 +34,7 @@ impl CopyPathType {
 	const FILENAME_LABEL: &'static str = "  Filename:   ";
 	const BASENAME_LABEL: &'static str = "  Basename:   ";
 	const EXTENSION_LABEL: &'static str = "  Extension:  ";
+	const CONTENT_LABEL: &'static str = "  Content:    ";
 
 	pub const fn label(self) -> &'static str {
 		match self {
@@ -41,31 +43,12 @@ impl CopyPathType {
 			Self::Filename => Self::FILENAME_LABEL,
 			Self::Basename => Self::BASENAME_LABEL,
 			Self::Extension => Self::EXTENSION_LABEL,
-		}
-	}
-
-	pub const fn next(self) -> Self {
-		match self {
-			Self::Relative => Self::Absolute,
-			Self::Absolute => Self::Filename,
-			Self::Filename => Self::Basename,
-			Self::Basename => Self::Extension,
-			Self::Extension => Self::Relative,
-		}
-	}
-
-	pub const fn previous(self) -> Self {
-		match self {
-			Self::Relative => Self::Extension,
-			Self::Absolute => Self::Relative,
-			Self::Filename => Self::Absolute,
-			Self::Basename => Self::Filename,
-			Self::Extension => Self::Basename,
+			Self::Content => Self::CONTENT_LABEL,
 		}
 	}
 }
 
-const ALL_TYPES: [CopyPathType; 5] = [
+const BASE_TYPES: [CopyPathType; 5] = [
 	CopyPathType::Relative,
 	CopyPathType::Absolute,
 	CopyPathType::Filename,
@@ -81,6 +64,7 @@ pub struct CopyPathPopup {
 	filename: String,
 	basename: String,
 	extension: String,
+	content: Option<String>,
 	queue: Queue,
 	theme: SharedTheme,
 	key_config: SharedKeyConfig,
@@ -100,6 +84,7 @@ impl CopyPathPopup {
 			filename: String::new(),
 			basename: String::new(),
 			extension: String::new(),
+			content: None,
 			queue,
 			theme,
 			key_config,
@@ -110,9 +95,11 @@ impl CopyPathPopup {
 		&mut self,
 		relative_path: String,
 		absolute_path: String,
+		content: Option<String>,
 	) -> Result<()> {
 		self.relative_path = relative_path;
 		self.absolute_path = absolute_path;
+		self.content = content;
 
 		let p = Path::new(&self.relative_path);
 		self.filename = p
@@ -139,27 +126,62 @@ impl CopyPathPopup {
 			CopyPathType::Filename => &self.filename,
 			CopyPathType::Basename => &self.basename,
 			CopyPathType::Extension => &self.extension,
+			CopyPathType::Content => {
+				self.content.as_deref().unwrap_or("")
+			}
+		}
+	}
+
+	fn available_types(&self) -> Vec<CopyPathType> {
+		let mut types: Vec<CopyPathType> = BASE_TYPES.to_vec();
+		if self.content.is_some() {
+			types.push(CopyPathType::Content);
+		}
+		types
+	}
+
+	fn next_kind(&mut self) {
+		let types = self.available_types();
+		if let Some(idx) = types.iter().position(|t| *t == self.kind)
+		{
+			let next = (idx + 1) % types.len();
+			self.kind = types[next];
+		}
+	}
+
+	fn previous_kind(&mut self) {
+		let types = self.available_types();
+		if let Some(idx) = types.iter().position(|t| *t == self.kind)
+		{
+			let prev = (idx + types.len() - 1) % types.len();
+			self.kind = types[prev];
 		}
 	}
 
 	fn copy_selected(&mut self) {
-		let path = self.value(self.kind);
-		if crate::clipboard::copy_string(path).is_err() {
+		let value = self.value(self.kind).to_string();
+		if crate::clipboard::copy_string(&value).is_err() {
 			self.queue.push(InternalEvent::ShowErrorMsg(
 				strings::POPUP_FAIL_COPY.to_string(),
 			));
 		} else {
+			let label = if self.kind == CopyPathType::Content {
+				self.filename.clone()
+			} else {
+				value
+			};
 			self.queue.push(InternalEvent::ShowInfoMsg(
-				strings::copy_success(path),
+				strings::copy_success(&label),
 			));
 		}
 		self.hide();
 	}
 
 	fn get_text(&self) -> Vec<Line<'_>> {
-		let mut lines = Vec::with_capacity(ALL_TYPES.len());
+		let types = self.available_types();
+		let mut lines = Vec::with_capacity(types.len());
 
-		for kind in ALL_TYPES {
+		for kind in types {
 			let selected = self.kind == kind;
 			let style = if selected {
 				self.theme.text(true, true)
@@ -168,10 +190,20 @@ impl CopyPathPopup {
 			};
 			let prefix = if selected { "> " } else { "  " };
 
+			let value = if kind == CopyPathType::Content {
+				let n = self
+					.content
+					.as_ref()
+					.map_or(0, |c| c.lines().count());
+				format!("({n} lines)")
+			} else {
+				self.value(kind).to_string()
+			};
+
 			lines.push(Line::from(vec![
 				Span::styled(prefix, style),
 				Span::styled(kind.label(), style),
-				Span::styled(self.value(kind).to_string(), style),
+				Span::styled(value, style),
 			]));
 		}
 
@@ -182,7 +214,7 @@ impl CopyPathPopup {
 impl DrawableComponent for CopyPathPopup {
 	fn draw(&self, f: &mut Frame, _area: Rect) -> Result<()> {
 		if self.is_visible() {
-			const SIZE: (u16, u16) = (80, 7);
+			const SIZE: (u16, u16) = (80, 8);
 			let area =
 				ui::centered_rect_absolute(SIZE.0, SIZE.1, f.area());
 
@@ -257,11 +289,11 @@ impl Component for CopyPathPopup {
 					key,
 					self.key_config.keys.popup_down,
 				) {
-					self.kind = self.kind.next();
+					self.next_kind();
 				} else if key_match(key, self.key_config.keys.move_up)
 					|| key_match(key, self.key_config.keys.popup_up)
 				{
-					self.kind = self.kind.previous();
+					self.previous_kind();
 				} else if key_match(key, self.key_config.keys.enter) {
 					self.copy_selected();
 				}

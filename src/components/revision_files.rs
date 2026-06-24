@@ -17,8 +17,8 @@ use anyhow::Result;
 use asyncgit::{
 	asyncjob::AsyncSingleJob,
 	sync::{
-		get_commit_info, utils::repo_work_dir, CommitId, CommitInfo,
-		RepoPathRef, TreeFile,
+		get_commit_info, tree_file_content, utils::repo_work_dir,
+		CommitId, CommitInfo, RepoPathRef, TreeFile,
 	},
 	AsyncGitNotification, AsyncTreeFilesJob,
 };
@@ -295,9 +295,12 @@ impl RevisionFilesComponent {
 							.into_owned()
 					},
 				);
+
+			let content = self.read_selected_file_content();
+
 			if self
 				.copy_path_popup
-				.open(relative_path, absolute_path)
+				.open(relative_path, absolute_path, content)
 				.is_err()
 			{
 				self.queue.push(InternalEvent::ShowErrorMsg(
@@ -305,6 +308,16 @@ impl RevisionFilesComponent {
 				));
 			}
 		}
+	}
+
+	fn read_selected_file_content(&self) -> Option<String> {
+		self.tree.selected_file()?;
+
+		let file = self.selected_file_path_with_prefix()?;
+		let path = Path::new(&file);
+		let files = self.files.as_ref()?;
+		let tree_file = files.iter().find(|f| f.path == path)?;
+		tree_file_content(&self.repo.borrow(), tree_file).ok()
 	}
 
 	fn selection_changed(&mut self) {

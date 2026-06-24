@@ -358,9 +358,16 @@ impl StatusTreeComponent {
 							.into_owned()
 					},
 				);
+
+			let content = if self.selection_file().is_some() {
+				std::fs::read_to_string(&absolute_path).ok()
+			} else {
+				None
+			};
+
 			if self
 				.copy_path_popup
-				.open(relative_path, absolute_path)
+				.open(relative_path, absolute_path, content)
 				.is_err()
 			{
 				self.queue.push(InternalEvent::ShowErrorMsg(
