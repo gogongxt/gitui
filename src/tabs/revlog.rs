@@ -463,9 +463,26 @@ impl Component for Revlog {
 			if event_used.is_consumed() {
 				self.update()?;
 				return Ok(EventState::Consumed);
-			} else if let Event::Key(k) = ev {
+			}
+
+			// Route to the inline details panel (message window /
+			// file tree) when it's visible, so focused keys — e.g.
+			// `y` to copy the commit message — reach it before the
+			// tab-level copy-hash handler below.
+			if self.commit_details.is_visible() {
+				let details_used = self.commit_details.event(ev)?;
+				if details_used.is_consumed() {
+					self.update()?;
+					return Ok(EventState::Consumed);
+				}
+			}
+
+			if let Event::Key(k) = ev {
 				if key_match(k, self.key_config.keys.enter) {
 					self.commit_details.toggle_visible()?;
+					if self.commit_details.is_visible() {
+						self.commit_details.focus_details();
+					}
 					self.update()?;
 					return Ok(EventState::Consumed);
 				} else if key_match(

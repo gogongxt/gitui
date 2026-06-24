@@ -709,6 +709,16 @@ pub mod commands {
 			CMD_GROUP_LOG,
 		)
 	}
+	pub fn copy_message(key_config: &SharedKeyConfig) -> CommandText {
+		CommandText::new(
+			format!(
+				"Copy Message [{}]",
+				key_config.get_hint(key_config.keys.copy),
+			),
+			"copy commit message to clipboard",
+			CMD_GROUP_LOG,
+		)
+	}
 	pub fn copy_path(key_config: &SharedKeyConfig) -> CommandText {
 		CommandText::new(
 			format!(

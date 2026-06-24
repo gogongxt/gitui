@@ -8,6 +8,7 @@ use crate::{
 		EventState, ScrollType,
 	},
 	keys::{key_match, SharedKeyConfig},
+	queue::{InternalEvent, Queue},
 	strings::{self, order},
 	ui::style::SharedTheme,
 };
@@ -37,6 +38,7 @@ pub struct DetailsComponent {
 	scroll: VerticalScroll,
 	scroll_to_bottom_next_draw: Cell<bool>,
 	key_config: SharedKeyConfig,
+	queue: Queue,
 }
 
 type WrappedCommitMessage<'a> =
@@ -55,6 +57,24 @@ impl DetailsComponent {
 			current_width: Cell::new(0),
 			scroll: VerticalScroll::new(),
 			key_config: env.key_config.clone(),
+			queue: env.queue.clone(),
+		}
+	}
+
+	fn copy_message(&self) {
+		if let Some(data) = &self.data {
+			if let Some(message) = &data.message {
+				let text = message.clone().combine();
+				if crate::clipboard::copy_string(&text).is_err() {
+					self.queue.push(InternalEvent::ShowErrorMsg(
+						strings::POPUP_FAIL_COPY.to_string(),
+					));
+				} else {
+					self.queue.push(InternalEvent::ShowInfoMsg(
+						strings::copy_success(&text),
+					));
+				}
+			}
 		}
 	}
 
@@ -355,6 +375,20 @@ impl Component for DetailsComponent {
 			.order(order::NAV),
 		);
 
+		let has_message = self
+			.data
+			.as_ref()
+			.and_then(|d| d.message.as_ref())
+			.is_some();
+		out.push(
+			CommandInfo::new(
+				strings::commands::copy_message(&self.key_config),
+				has_message,
+				self.focused || force_all,
+			)
+			.order(order::NAV),
+		);
+
 		CommandBlocking::PassingOn
 	}
 
@@ -362,9 +396,16 @@ impl Component for DetailsComponent {
 		if self.focused {
 			if let Event::Key(e) = event {
 				return Ok(
-					if key_match(e, self.key_config.keys.move_up)
-						|| key_match(e, self.key_config.keys.popup_up)
-					{
+					if key_match(e, self.key_config.keys.copy) {
+						self.copy_message();
+						EventState::Consumed
+					} else if key_match(
+						e,
+						self.key_config.keys.move_up,
+					) || key_match(
+						e,
+						self.key_config.keys.popup_up,
+					) {
 						self.move_scroll_top(ScrollType::Up).into()
 					} else if key_match(
 						e,
