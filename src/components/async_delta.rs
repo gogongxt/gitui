@@ -419,7 +419,14 @@ fn run_delta(
 		|| (Vec::new(), Vec::new()),
 		|bytes| {
 			let text = String::from_utf8_lossy(&bytes);
-			ansi_to_lines(&text)
+			let (lines, bgs) = ansi_to_lines(&text);
+			// Strip leading empty lines — delta always emits a blank
+			// line before the first hunk separator.
+			let first = lines
+				.iter()
+				.position(|l| !l.spans.is_empty())
+				.unwrap_or(0);
+			(lines[first..].to_vec(), bgs[first..].to_vec())
 		},
 	);
 
