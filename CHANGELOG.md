@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.6] - 2026-06-24
+
+### Added
+* commit details message view: pressing `y` while the message window is focused (inline panel opened via `Enter` in Revlog, or the InspectCommit popup via `→`) copies the full commit message (subject + body) to the clipboard. The Revlog list's `y` (copy hash) is unaffected since the message window has its own focus state. Adds a "Copy Message" command-bar label.
+
+### Fixed
+* delta diff preview no longer starts with a spurious empty row. Delta always emits a blank line before the first hunk separator; leading empty lines are now stripped from the parsed output so the preview begins with the separator box.
+
 ## [v2.5] - 2026-06-24
 
 ### Added
