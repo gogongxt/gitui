@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.5] - 2026-06-24
+
+### Added
+* Copy Path popup (`Shift+Y`) now has a `Content` option that copies a selected file's entire contents to the clipboard. The option is shown only for files (hidden for directories and binary/unreadable files). In the revision files tree, content is read from the git revision; in the status tree, from the working tree.
+
+### Fixed
+* delta diff preview in non-side-by-side mode no longer clips the tail of wrapped lines for CJK/full-width text. Line wrapping, the trailing-whitespace trim threshold, and background padding now use unicode display width (`unicode-width`) instead of `chars().count()`, so CJK characters (2 terminal cells each) produce the correct number of wrapped rows that match what ratatui renders — fixing the "3 rows became 2" truncation in narrow previews. Adds a CJK reproduction test.
+
 ## [v2.4] - 2026-06-23
 
 ### Fixed
