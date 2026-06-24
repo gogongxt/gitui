@@ -1490,7 +1490,11 @@ impl DiffComponent {
 						let content_width: usize = line
 							.spans
 							.iter()
-							.map(|s| s.content.chars().count())
+							.map(|s| {
+								unicode_width::UnicodeWidthStr::width(
+									s.content.as_ref(),
+								)
+							})
 							.sum();
 						if content_width < panel_width {
 							let padding = " "
@@ -2420,6 +2424,151 @@ mod tests {
 			1,
 			"exact width should produce 1 line, got {}",
 			wrapped.len()
+		);
+	}
+
+	/// Reproduces the non-SBS delta preview truncation bug: a long
+	/// added line that should wrap into N rows in a narrow preview
+	/// must render all N rows. The wrapped line count (from
+	/// `rebuild`) must match the number of rows the Paragraph
+	/// actually renders inside the bordered rect.
+	#[test]
+	fn test_delta_preview_renders_all_wrapped_rows() {
+		use ratatui::{backend::TestBackend, Terminal};
+		use tempfile::TempDir;
+		if !DiffComponent::is_delta_available() {
+			eprintln!("skipping: delta binary not on PATH");
+			return;
+		}
+		let td = TempDir::new().unwrap();
+		for mut c in [
+			std::process::Command::new("git"),
+			std::process::Command::new("git"),
+			std::process::Command::new("git"),
+		] {
+			let _ = c.current_dir(td.path()).output();
+		}
+		std::process::Command::new("git")
+			.args(["init"])
+			.current_dir(td.path())
+			.output()
+			.unwrap();
+		std::process::Command::new("git")
+			.args(["config", "user.email", "t@t.t"])
+			.current_dir(td.path())
+			.output()
+			.unwrap();
+		std::process::Command::new("git")
+			.args(["config", "user.name", "t"])
+			.current_dir(td.path())
+			.output()
+			.unwrap();
+
+		let file_path = td.path().join("f.txt");
+		std::fs::write(&file_path, "short\n").unwrap();
+		std::process::Command::new("git")
+			.args(["add", "f.txt"])
+			.current_dir(td.path())
+			.output()
+			.unwrap();
+		std::process::Command::new("git")
+			.args(["commit", "-m", "init"])
+			.current_dir(td.path())
+			.output()
+			.unwrap();
+
+		// A long line of CJK characters. Each CJK char occupies 2
+		// terminal cells, so 40 chars = 80 cells. At panel width 40,
+		// this should wrap into 2 rows (80/40), but `wrap_line` uses
+		// chars().count() (treating CJK as width 1), so it thinks the
+		// line fits in 1 row — causing truncation.
+		let long_line = "中".repeat(40);
+		std::fs::write(&file_path, format!("short\n{long_line}\n"))
+			.unwrap();
+
+		let repo = RepoPath::Path(td.path().to_path_buf());
+
+		let env = Environment::test_env();
+		let mut diff_comp = DiffComponent::new(&env, false);
+		*diff_comp.repo.borrow_mut() = repo.clone();
+		// Force delta mode: Unified -> SideBySide -> Delta
+		diff_comp.toggle_diff_mode();
+		diff_comp.toggle_diff_mode();
+		assert!(diff_comp.is_delta_preview());
+
+		// Narrow preview width: content area = 40 (rect width 42).
+		// current_size stores content width/height (rect - 2 borders).
+		let rect_width: u16 = 42;
+		let rect_height: u16 = 30;
+		diff_comp.current_size.set((40, rect_height - 2));
+		diff_comp.focus(true);
+
+		let diff = make_filediff(&repo, "f.txt", false);
+		assert!(!diff.hunks.is_empty());
+		diff_comp.update(
+			"f.txt".to_string(),
+			false,
+			diff.clone(),
+			DiffType::WorkDir,
+		);
+		let params = DeltaParams {
+			path: "f.txt".to_string(),
+			diff_type: DiffType::WorkDir,
+			width: 40,
+			side_by_side: false,
+			diff_hash: diff_comp.current.hash,
+		};
+		let result = diff_comp
+			.async_delta
+			.request_sync(&params, &repo, Some(&diff))
+			.expect("delta should produce output");
+		diff_comp.apply_delta_result(result);
+
+		let display_len =
+			diff_comp.delta_display_lines.borrow().len();
+		assert!(
+			display_len > 1,
+			"should have multiple display lines after wrap, got {display_len}"
+		);
+
+		// Render into a TestBackend buffer and count non-empty content
+		// rows inside the diff rect.
+		let backend = TestBackend::new(rect_width, rect_height);
+		let mut terminal = Terminal::new(backend).unwrap();
+		terminal
+			.draw(|f| {
+				diff_comp.draw(f, f.area()).expect("draw failed");
+			})
+			.unwrap();
+
+		let buffer = terminal.backend().buffer();
+		// Find the last non-border row that has content; the
+		// trailing wrapped lines of the long CJK line must be
+		// visible (not clipped). We check that the last CJK
+		// continuation row (the partial 5-char tail) is present.
+		let mut saw_cjk_tail = false;
+		for y in 1..(rect_height as usize).saturating_sub(1) {
+			let mut row_content = String::new();
+			for x in 1..(rect_width as usize).saturating_sub(1) {
+				let cell = &buffer[(x as u16, y as u16)];
+				row_content.push_str(cell.symbol());
+			}
+			// The wrapped tail row contains 5 CJK "中" chars followed
+			// by padding. Count CJK occurrences in the row.
+			let cjk_count =
+				row_content.chars().filter(|&c| c == '中').count();
+			if cjk_count > 0 && cjk_count < 10 {
+				saw_cjk_tail = true;
+			}
+		}
+
+		// The wrapped CJK tail (the partial last row) must be visible.
+		// Before the fix, `wrap_line` counted CJK chars as width 1, so
+		// the long line wrapped into too few rows and the tail was
+		// clipped off-screen.
+		assert!(
+			saw_cjk_tail,
+			"wrapped CJK tail row was not rendered — tail is being truncated (display_len={display_len})"
 		);
 	}
 

@@ -19,6 +19,7 @@ use ratatui::{
 };
 
 use crate::ansi::ansi_to_lines;
+use unicode_width::UnicodeWidthStr;
 
 /// Parameters identifying a delta render request.
 ///
@@ -560,7 +561,7 @@ fn rebuild(
 		let content_len: usize = line
 			.spans
 			.iter()
-			.map(|s| s.content.chars().count())
+			.map(|s| display_width(s.content.as_ref()))
 			.sum();
 		let trimmed_line = if content_len > panel_width {
 			let mut spans: Vec<Span<'static>> = line.spans.clone();
@@ -629,6 +630,11 @@ fn parse_delta_line_numbers(
 	(old_lineno, new_lineno)
 }
 
+/// Display width of a string, counting CJK/full-width chars as 2 cells.
+fn display_width(s: &str) -> usize {
+	UnicodeWidthStr::width(s)
+}
+
 pub fn wrap_line(
 	line: &Line<'static>,
 	width: usize,
@@ -658,23 +664,56 @@ pub fn wrap_line(
 				continue;
 			}
 
-			let char_count = remaining.chars().count();
-			if char_count <= space {
+			let w = display_width(remaining);
+			if w <= space {
 				current_spans.push(Span::styled(
 					Cow::Owned(remaining.to_string()),
 					style,
 				));
-				current_width += char_count;
+				current_width += w;
 				break;
 			}
 
-			let mut byte_end = remaining.len();
-			for (idx, (i, _)) in remaining.char_indices().enumerate()
-			{
-				if idx == space {
-					byte_end = i;
+			// Find the longest prefix whose display width fits in `space`.
+			let mut byte_end = 0;
+			let mut acc = 0;
+			for (i, ch) in remaining.char_indices() {
+				let cw = unicode_width::UnicodeWidthChar::width(ch)
+					.unwrap_or(0);
+				if acc + cw > space {
 					break;
 				}
+				acc += cw;
+				byte_end = i + ch.len_utf8();
+			}
+			if byte_end == 0 {
+				// The very first char is wider than `space` (e.g. a
+				// CJK char when space==1). Flush the current line so
+				// this char starts a new one, then retry.
+				if current_width > 0 {
+					result.push(Line::from(std::mem::take(
+						&mut current_spans,
+					)));
+					current_width = 0;
+					continue;
+				}
+				// current_width == 0: force-emit the wide char on its
+				// own line. `remaining` is non-empty (checked above).
+				let Some((_, ch)) = remaining.char_indices().next()
+				else {
+					break;
+				};
+				let take = ch.len_utf8();
+				current_spans.push(Span::styled(
+					Cow::Owned(remaining[..take].to_string()),
+					style,
+				));
+				remaining = &remaining[take..];
+				result.push(Line::from(std::mem::take(
+					&mut current_spans,
+				)));
+				current_width = 0;
+				continue;
 			}
 			current_spans.push(Span::styled(
 				Cow::Owned(remaining[..byte_end].to_string()),
@@ -706,8 +745,11 @@ pub fn pad_line_bg(
 	is_sbs: bool,
 	dominant_bg: Option<Color>,
 ) -> Line<'static> {
-	let content_width: usize =
-		line.spans.iter().map(|s| s.content.chars().count()).sum();
+	let content_width: usize = line
+		.spans
+		.iter()
+		.map(|s| display_width(s.content.as_ref()))
+		.sum();
 	let bg_idx =
 		line.spans.iter().rposition(|s| s.style.bg.is_some());
 	let Some(idx) = bg_idx else {
@@ -769,7 +811,7 @@ pub fn pad_line_bg(
 		boundary.map_or(content_width, |b| {
 			line.spans[..b]
 				.iter()
-				.map(|s| s.content.chars().count())
+				.map(|s| display_width(s.content.as_ref()))
 				.sum()
 		})
 	} else {
@@ -777,7 +819,7 @@ pub fn pad_line_bg(
 	};
 	let left_panel_width: usize = line.spans[..apply_end]
 		.iter()
-		.map(|s| s.content.chars().count())
+		.map(|s| display_width(s.content.as_ref()))
 		.sum();
 	if left_panel_width < pad_limit {
 		let pad = pad_limit - left_panel_width;
