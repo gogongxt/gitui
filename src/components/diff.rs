@@ -2117,7 +2117,6 @@ impl Component for DiffComponent {
 					self.key_config.keys.status_reset_item,
 				) && !self.is_immutable
 					&& !self.is_stage()
-					&& !self.is_delta_preview()
 				{
 					if let Some(diff) = &self.diff {
 						if diff.untracked {
