@@ -14,7 +14,7 @@ use ratatui::{layout::Rect, text::Text, widgets::Clear, Frame};
 use std::borrow::Cow;
 use ui::style::SharedTheme;
 
-use super::popup_paragraph;
+use super::render_popup;
 
 ///
 pub struct ConfirmPopup {
@@ -36,10 +36,24 @@ impl DrawableComponent for ConfirmPopup {
 			);
 
 			let area = ui::centered_rect(50, 20, f.area());
-			f.render_widget(Clear, area);
-			f.render_widget(
-				popup_paragraph(&title, txt, &self.theme, true, true),
+			// Clear a 1-cell margin around the popup so that a wide
+			// (CJK/emoji) grapheme sitting just outside the popup area
+			// cannot visually overflow into the popup's border cells.
+			let clear_area = Rect::new(
+				area.x.saturating_sub(1),
+				area.y.saturating_sub(1),
+				area.width.saturating_add(2),
+				area.height.saturating_add(2),
+			);
+			f.render_widget(Clear, clear_area);
+			render_popup(
+				f.buffer_mut(),
 				area,
+				&title,
+				txt,
+				&self.theme,
+				true,
+				true,
 			);
 		}
 
@@ -261,5 +275,65 @@ impl ConfirmPopup {
 		}
 
 		(String::new(), String::new())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::ui::style::Theme;
+	use ratatui::{
+		buffer::Buffer,
+		widgets::{Clear, Widget},
+	};
+
+	/// Simulate the real failure mode: a wide (CJK) grapheme sits just
+	/// outside the popup area (in the diff background). Without clearing a
+	/// 1-cell margin, that grapheme visually overflows into the popup's
+	/// left border cell. With the margin clear, the border is preserved.
+	#[test]
+	fn popup_left_border_survives_adjacent_wide_char() {
+		let theme = Theme::default();
+		let mut buf = Buffer::empty(Rect::new(0, 0, 30, 7));
+
+		// Fill the row y=3 (popup's middle row) with CJK chars, including
+		// the cell immediately left of the popup area.
+		for x in 0..30 {
+			buf[(x, 3)].set_symbol("中");
+		}
+
+		// Popup area: x=10..20, y=2..5 (width 10, height 3)
+		let area = Rect::new(10, 2, 10, 3);
+
+		// Clear a 1-cell margin around the popup (mirrors draw()).
+		let clear_area = Rect::new(
+			area.x.saturating_sub(1),
+			area.y.saturating_sub(1),
+			area.width.saturating_add(2),
+			area.height.saturating_add(2),
+		);
+		Clear.render(clear_area, &mut buf);
+
+		// Render the popup block + text.
+		let txt =
+			Text::styled("confirm reset hunk?", theme.text_danger());
+		super::render_popup(
+			&mut buf, area, "Reset", txt, &theme, true, true,
+		);
+
+		// The left border cell at (10, 3) must be a vertical border
+		// glyph, not a CJK char that overflowed from (9, 3).
+		assert_eq!(
+			buf[(10, 3)].symbol(),
+			"┃",
+			"left border must not be stomped by adjacent CJK"
+		);
+		// Also check the cell just outside (9, 3) was cleared so the
+		// CJK char there cannot visually extend into the border.
+		assert_eq!(
+			buf[(9, 3)].symbol(),
+			" ",
+			"cell adjacent to popup must be cleared"
+		);
 	}
 }

@@ -18,9 +18,9 @@ use asyncgit::sync::status::discard_status;
 use asyncgit::sync::{checkout_branch, BranchInfo, RepoPath};
 use crossterm::event::Event;
 use ratatui::{
-	layout::{Alignment, Rect},
+	layout::Rect,
 	text::{Line, Span},
-	widgets::{Block, Borders, Clear, Paragraph},
+	widgets::{Block, Borders, Clear},
 	Frame,
 };
 
@@ -134,19 +134,18 @@ impl DrawableComponent for CheckoutOptionPopup {
 			let width = area.width;
 
 			f.render_widget(Clear, area);
-			f.render_widget(
-				Paragraph::new(self.get_text(width))
-					.block(
-						Block::default()
-							.borders(Borders::ALL)
-							.title(Span::styled(
-								"Checkout options",
-								self.theme.title(true),
-							))
-							.border_style(self.theme.block(true)),
-					)
-					.alignment(Alignment::Left),
+			let block = Block::default()
+				.borders(Borders::ALL)
+				.title(Span::styled(
+					"Checkout options",
+					self.theme.title(true),
+				))
+				.border_style(self.theme.block(true));
+			ui::render_block_text(
+				f.buffer_mut(),
 				area,
+				block,
+				&self.get_text(width),
 			);
 		}
 

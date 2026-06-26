@@ -18,7 +18,7 @@ use crate::{
 	string_utils::tabs_to_spaces,
 	string_utils::trim_offset,
 	strings, try_or_popup,
-	ui::style::SharedTheme,
+	ui::{self, style::SharedTheme},
 };
 use anyhow::Result;
 use asyncgit::{
@@ -35,7 +35,7 @@ use ratatui::{
 	style::Color,
 	symbols,
 	text::{Line, Span},
-	widgets::{Block, Borders, Paragraph},
+	widgets::{Block, Borders},
 	Frame,
 };
 use serde::{Deserialize, Serialize};
@@ -1510,18 +1510,16 @@ impl DiffComponent {
 				.collect()
 		};
 
-		f.render_widget(
-			Paragraph::new(txt).block(
-				Block::default()
-					.title(Span::styled(
-						title,
-						self.theme.title(self.focused()),
-					))
-					.borders(Borders::ALL)
-					.border_style(self.theme.block(self.focused())),
-			),
-			r,
-		);
+		let block = Block::default()
+			.title(Span::styled(
+				title,
+				self.theme.title(self.focused()),
+			))
+			.borders(Borders::ALL)
+			.border_style(self.theme.block(self.focused()));
+		let inner = block.inner(r);
+		f.render_widget(block, r);
+		ui::render_lines(f.buffer_mut(), inner, &txt);
 
 		if self.focused() {
 			self.vertical_scroll.draw(f, r, &self.theme);
@@ -1748,32 +1746,28 @@ impl DiffComponent {
 			.collect();
 
 		// Draw left column
-		f.render_widget(
-			Paragraph::new(left_txt).block(
-				Block::default()
-					.title(Span::styled(
-						format!("{title} [Old]{hunk_indicator}"),
-						self.theme.title(self.focused()),
-					))
-					.borders(Borders::ALL)
-					.border_style(self.theme.block(self.focused())),
-			),
-			chunks[0],
-		);
+		let left_block = Block::default()
+			.title(Span::styled(
+				format!("{title} [Old]{hunk_indicator}"),
+				self.theme.title(self.focused()),
+			))
+			.borders(Borders::ALL)
+			.border_style(self.theme.block(self.focused()));
+		let left_inner = left_block.inner(chunks[0]);
+		f.render_widget(left_block, chunks[0]);
+		ui::render_lines(f.buffer_mut(), left_inner, &left_txt);
 
 		// Draw right column
-		f.render_widget(
-			Paragraph::new(right_txt).block(
-				Block::default()
-					.title(Span::styled(
-						format!("[New]{hunk_indicator}"),
-						self.theme.title(self.focused()),
-					))
-					.borders(Borders::ALL)
-					.border_style(self.theme.block(self.focused())),
-			),
-			chunks[1],
-		);
+		let right_block = Block::default()
+			.title(Span::styled(
+				format!("[New]{hunk_indicator}"),
+				self.theme.title(self.focused()),
+			))
+			.borders(Borders::ALL)
+			.border_style(self.theme.block(self.focused()));
+		let right_inner = right_block.inner(chunks[1]);
+		f.render_widget(right_block, chunks[1]);
+		ui::render_lines(f.buffer_mut(), right_inner, &right_txt);
 
 		if self.focused() {
 			self.vertical_scroll.draw(f, r, &self.theme);
@@ -1904,20 +1898,16 @@ impl DrawableComponent for DiffComponent {
 				self.get_text(r.width, current_height)
 			};
 
-			f.render_widget(
-				Paragraph::new(txt).block(
-					Block::default()
-						.title(Span::styled(
-							title.as_str(),
-							self.theme.title(self.focused()),
-						))
-						.borders(Borders::ALL)
-						.border_style(
-							self.theme.block(self.focused()),
-						),
-				),
-				r,
-			);
+			let block = Block::default()
+				.title(Span::styled(
+					title.as_str(),
+					self.theme.title(self.focused()),
+				))
+				.borders(Borders::ALL)
+				.border_style(self.theme.block(self.focused()));
+			let inner = block.inner(r);
+			f.render_widget(block, r);
+			ui::render_lines(f.buffer_mut(), inner, &txt);
 
 			if self.focused() {
 				self.vertical_scroll.draw(f, r, &self.theme);

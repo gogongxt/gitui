@@ -20,7 +20,7 @@ use crossterm::{
 use ratatui::{
 	layout::Rect,
 	text::{Line, Span},
-	widgets::{Block, BorderType, Borders, Clear, Paragraph},
+	widgets::{Block, BorderType, Borders, Clear},
 	Frame,
 };
 use scopeguard::defer;
@@ -176,16 +176,16 @@ impl DrawableComponent for ExternalEditorPopup {
 
 			let area = ui::centered_rect_absolute(25, 3, f.area());
 			f.render_widget(Clear, area);
-			f.render_widget(
-				Paragraph::new(txt)
-					.block(
-						Block::default()
-							.borders(Borders::ALL)
-							.border_type(BorderType::Thick)
-							.border_style(self.theme.block(true)),
-					)
-					.style(self.theme.block(true)),
+			let block = Block::default()
+				.borders(Borders::ALL)
+				.border_type(BorderType::Thick)
+				.border_style(self.theme.block(true))
+				.style(self.theme.block(true));
+			ui::render_block_text(
+				f.buffer_mut(),
 				area,
+				block,
+				std::iter::once(&txt),
 			);
 		}
 

@@ -123,6 +123,54 @@ pub fn centered_rect_absolute(
 	)
 }
 
+/// Render lines of text directly into `buf` within `area`.
+///
+/// We avoid `Paragraph` here because its `render_text` path
+/// (`ratatui::widgets::paragraph::render_text`) writes a wide (CJK/emoji)
+/// grapheme with `Cell::set_symbol` but does not reset the trailing cell it
+/// occupies, so the next cell's symbol gets overwritten visually — including
+/// a border cell. `Buffer::set_line` resets the trailing cell and drops any
+/// grapheme wider than the remaining width, so a wide grapheme never visually
+/// overflows the right edge of `area`.
+pub fn render_lines<'a, I>(
+	buf: &mut ratatui::buffer::Buffer,
+	area: Rect,
+	lines: I,
+) where
+	I: IntoIterator<Item = &'a ratatui::text::Line<'a>>,
+{
+	if area.is_empty() {
+		return;
+	}
+	for (row, line) in lines.into_iter().enumerate() {
+		let Ok(row) = u16::try_from(row) else {
+			break;
+		};
+		let y = area.top().saturating_add(row);
+		if y >= area.bottom() {
+			break;
+		}
+		buf.set_line(area.left(), y, line, area.width);
+	}
+}
+
+/// Render a `Block` into `area`, then render `lines` inside the block's
+/// inner area using `render_lines`. This is the wide-char-safe replacement
+/// for `Paragraph::new(text).block(block)` — see `render_lines` for why
+/// `Paragraph` is unsafe with CJK/emoji content.
+pub fn render_block_text<'a, I>(
+	buf: &mut ratatui::buffer::Buffer,
+	area: Rect,
+	block: ratatui::widgets::Block<'a>,
+	lines: I,
+) where
+	I: IntoIterator<Item = &'a ratatui::text::Line<'a>>,
+{
+	let inner = block.inner(area);
+	ratatui::widgets::Widget::render(block, area, buf);
+	render_lines(buf, inner, lines);
+}
+
 ///
 pub fn common_nav(
 	key: &crossterm::event::KeyEvent,
