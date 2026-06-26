@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.7] - 2026-06-26
+
+### Fixed
+* reset hunk now works in delta preview mode. The `!is_delta_preview()` guard on the `status_reset_item` keybinding has been removed — `selected_hunk` and the hunk header hash are both maintained correctly in delta mode (via the `delta_line_hunks` mapping), so reset hunk runs the same way as stage/unstage hunk, which was already unguarded.
+* wide (CJK/emoji) graphemes no longer visually overflow `Block` borders in the diff view and popups. `ratatui` 0.29's `Paragraph::render_text` writes a wide grapheme with `Cell::set_symbol` but does not reset the trailing cell it occupies, so the next cell's symbol (including a border glyph) gets overwritten on the terminal. The diff component (`draw_delta`, `draw_side_by_side`, unified path) and the confirm/checkout-option/reset/options/copy-path/external-editor popups now render via `Buffer::set_line` (through `ui::render_lines` / `ui::render_block_text`), which resets the trailing cell and drops graphemes wider than the remaining width. The confirm popup additionally clears a 1-cell margin around itself so a wide grapheme sitting just outside the popup area cannot visually overflow into the popup's border cells.
+
 ## [v2.6] - 2026-06-24
 
 ### Added
