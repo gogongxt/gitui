@@ -163,7 +163,11 @@ mod tests {
 	use pretty_assertions::assert_eq;
 	use std::path::Path;
 
+	// Ignored: clones a real GitHub repo (extrawurst/brewdump), so it
+	// needs network access and is flaky offline. Run with
+	// `cargo test -- --ignored test_smoke` when online.
 	#[test]
+	#[ignore = "requires network access to github.com"]
 	fn test_smoke() {
 		let (dir, _r) = repo_init().unwrap();
 
