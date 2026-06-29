@@ -1853,11 +1853,32 @@ impl DrawableComponent for DiffComponent {
 				)
 			});
 
+		let line_stats =
+			self.diff.as_ref().map_or_else(String::new, |diff| {
+				let (added, deleted) = diff
+					.hunks
+					.iter()
+					.flat_map(|hunk| hunk.lines.iter())
+					.fold((0, 0), |(a, d), line| {
+						match line.line_type {
+							DiffLineType::Add => (a + 1, d),
+							DiffLineType::Delete => (a, d + 1),
+							_ => (a, d),
+						}
+					});
+				if added == 0 && deleted == 0 {
+					String::new()
+				} else {
+					format!(" (+{added} -{deleted})")
+				}
+			});
+
 		// For side-by-side mode, hunk indicator will be added to [Old] and [New] titles
 		let title = format!(
-			"{}{}{}",
+			"{}{}{}{}",
 			strings::title_diff(&self.key_config),
 			self.current.path,
+			line_stats,
 			if self.diff_mode == DiffMode::SideBySide {
 				""
 			} else {
@@ -1874,12 +1895,13 @@ impl DrawableComponent for DiffComponent {
 			&& self.delta_display_lines.borrow().is_empty();
 
 		if self.diff_mode == DiffMode::SideBySide && !self.pending {
+			let indicator = format!("{line_stats}{hunk_info}");
 			self.draw_side_by_side(
 				f,
 				r,
 				&title,
 				current_height,
-				&hunk_info,
+				&indicator,
 			)?;
 		} else if self.is_delta_preview()
 			&& !self.pending
