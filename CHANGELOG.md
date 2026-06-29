@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.8] - 2026-06-29
+
+### Added
+* the diff panel title now shows per-file line additions/deletions as `(+added -deleted)` next to the file path, e.g. `Diff: src/components/diff.rs (+12 -3) [1/5]`. Counts are derived from `DiffLineType::Add`/`Delete` over all hunks and update on every render from the same `FileDiff` as the hunk indicator, so they stay in sync with stage/unstage and delta preview refreshes. Side-by-side mode appends the same indicator to the `[Old]`/`[New]` titles. Empty (no add/delete) diffs omit the counter.
+
+### Fixed
+* `sync::submodules::tests::test_smoke` no longer breaks local/offline test runs. The test clones a real GitHub repo (`extrawurst/brewdump`), so it failed whenever the network was unavailable. It is now marked `#[ignore = "requires network access to github.com"]` — skipped by default, still runnable via `cargo test -- --ignored test_smoke` when online.
+
 ## [v2.7] - 2026-06-26
 
 ### Fixed
