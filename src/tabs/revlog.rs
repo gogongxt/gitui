@@ -466,9 +466,10 @@ impl Component for Revlog {
 			}
 
 			// Route to the inline details panel (message window /
-			// file tree) when it's visible, so focused keys — e.g.
-			// `y` to copy the commit message — reach it before the
-			// tab-level copy-hash handler below.
+			// file tree) when it's visible, so focused keys reach it
+			// before the tab-level copy-hash handler below. The panel
+			// opens unfocused, so `y` copies the hash; to copy the
+			// message, open the fullscreen `InspectCommit` popup.
 			if self.commit_details.is_visible() {
 				let details_used = self.commit_details.event(ev)?;
 				if details_used.is_consumed() {

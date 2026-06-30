@@ -133,12 +133,14 @@ impl CommitDetailsComponent {
 		}
 	}
 
-	/// Focus the message (details) window and unfocus the file tree.
-	/// Used when the inline details panel is opened from the Revlog
-	/// tab so that keys (e.g. `y` to copy the message) route there.
+	/// Unfocus both the message pane and the file tree. Used when the
+	/// inline details panel is opened from the Revlog tab so that focus
+	/// stays on the commit list and `y` copies the commit hash. To copy
+	/// the commit message instead, open the fullscreen `InspectCommit`
+	/// popup (right-arrow), which focuses the message pane.
 	pub fn focus_details(&mut self) {
+		self.set_details_focus(false);
 		self.file_tree.focus(false);
-		self.set_details_focus(true);
 	}
 
 	fn is_compare(&self) -> bool {
