@@ -705,9 +705,7 @@ impl Status {
 	}
 
 	fn can_commit(&self) -> bool {
-		self.index.focused()
-			&& !self.index.is_empty()
-			&& !self.pending_rebase()
+		!self.index.is_empty() && !self.pending_rebase()
 	}
 }
 

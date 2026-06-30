@@ -2016,6 +2016,11 @@ impl Component for DiffComponent {
 		}
 
 		out.push(CommandInfo::new(
+			strings::commands::edit_item(&self.key_config),
+			!self.current.path.is_empty(),
+			self.focused(),
+		));
+		out.push(CommandInfo::new(
 			strings::commands::copy(&self.key_config),
 			true,
 			self.focused(),
@@ -2161,6 +2166,15 @@ impl Component for DiffComponent {
 					Ok(EventState::Consumed)
 				} else if key_match(e, self.key_config.keys.copy) {
 					self.copy_selection();
+					Ok(EventState::Consumed)
+				} else if !self.current.path.is_empty()
+					&& key_match(e, self.key_config.keys.edit_file)
+				{
+					self.queue.push(
+						InternalEvent::OpenExternalEditor(Some(
+							self.current.path.clone(),
+						)),
+					);
 					Ok(EventState::Consumed)
 				} else if key_match(
 					e,
