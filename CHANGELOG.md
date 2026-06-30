@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.9] - 2026-06-30
+
+### Added
+* `e` (edit file) and `c` (commit) now work when the diff pane is focused, not just when the file tree is focused. `DiffComponent` handles `edit_file` by opening the currently shown file in the external editor, and `Status::can_commit` no longer requires stage focus — so `c` works from WorkDir, Stage, or fullscreen-Diff focus whenever there are staged changes. The `edit_file` key also works in the InspectCommit, CompareCommits, and FileRevlog popup fullscreen diffs.
+* syntax highlighting now prefers `bat` when available, parsing its ANSI output through the existing `ansi_to_lines` pipeline. Falls back to the built-in syntect highlighter if `bat` is absent or fails, so behavior is unchanged on systems without it. `bat` reads `$BAT_THEME` itself, so users get their preferred theme with no extra wiring. Searches `PATH` for `bat` then `batcat` (Debian rename) with no new dependency.
+
+### Fixed
+* pressing `y` in the Revlog split view (left=commit list, right=inline details) now copies the commit **hash** instead of the message. The inline details panel no longer auto-focuses the message pane on open — focus stays on the commit list. To copy the commit message, open the fullscreen `InspectCommit` popup (right-arrow), which focuses the message pane.
+* centered text-input popups (commit, stash-message, rename branch/tag, etc.) no longer have their left border visually overwritten by a wide (CJK/emoji) grapheme in the diff content sitting just outside the popup. `TextInputComponent::draw` now clears a 1-cell margin around the popup area for non-embed cases, matching the `ConfirmPopup` fix — the same Layer-2 root cause documented in the wide-char border overflow notes.
+
 ## [v2.8] - 2026-06-29
 
 ### Added
