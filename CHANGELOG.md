@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.10] - 2026-06-30
+
+### Added
+* the Staged and Unstaged panes now show overlays on their top borders: the Staged pane shows `(+N -M)` line additions/deletions totals computed by folding over all staged `FileDiff`s, and the Unstaged pane shows the current branch with ahead/behind counts. Both overlays are always visible regardless of focus, replacing the previous focus-dependent branch display.
+
+### Fixed
+* info/error message popups (e.g. the copy-complete popup) no longer have their left/right borders visually overwritten by wide (CJK/emoji) graphemes. `MsgPopup::draw` now renders via `ui::render_block_text` (`Buffer::set_line`, which resets wide-char trailing cells) and clears a 1-cell margin around the popup so a wide grapheme sitting just outside the popup area cannot visually overflow into the border cells — the same two-layer fix previously applied to `ConfirmPopup` and the text-input popups.
+
 ## [v2.9] - 2026-06-30
 
 ### Added
