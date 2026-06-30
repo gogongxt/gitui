@@ -12,9 +12,9 @@ use anyhow::Result;
 use crossterm::event::Event;
 use ratatui::text::Line;
 use ratatui::{
-	layout::{Alignment, Rect},
+	layout::Rect,
 	text::Span,
-	widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+	widgets::{Block, BorderType, Borders, Clear},
 	Frame,
 };
 use ui::style::SharedTheme;
@@ -84,21 +84,29 @@ impl DrawableComponent for MsgPopup {
 			})
 			.collect::<Vec<Line>>();
 
-		f.render_widget(Clear, area);
-		f.render_widget(
-			Paragraph::new(scrolled_lines)
-				.block(
-					Block::default()
-						.title(Span::styled(
-							self.title.as_str(),
-							self.theme.text_danger(),
-						))
-						.borders(Borders::ALL)
-						.border_type(BorderType::Thick),
-				)
-				.alignment(Alignment::Left)
-				.wrap(Wrap { trim: true }),
+		// Clear a 1-cell margin around the popup so that a wide
+		// (CJK/emoji) grapheme sitting just outside the popup area
+		// cannot visually overflow into the popup's border cells.
+		let clear_area = Rect::new(
+			area.x.saturating_sub(1),
+			area.y.saturating_sub(1),
+			area.width.saturating_add(2),
+			area.height.saturating_add(2),
+		);
+		f.render_widget(Clear, clear_area);
+
+		let block = Block::default()
+			.title(Span::styled(
+				self.title.as_str(),
+				self.theme.text_danger(),
+			))
+			.borders(Borders::ALL)
+			.border_type(BorderType::Thick);
+		ui::render_block_text(
+			f.buffer_mut(),
 			area,
+			block,
+			&scrolled_lines,
 		);
 
 		self.scroll.draw(f, area, &self.theme);
@@ -205,5 +213,71 @@ impl MsgPopup {
 			msg,
 			strings::msg_title_info(&self.key_config),
 		)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::app::Environment;
+	use ratatui::{backend::TestBackend, Terminal};
+
+	/// Reproduces the wide-char border overflow on `MsgPopup`: when the
+	/// buffer behind the popup is filled with CJK chars (e.g. a fullscreen
+	/// diff background), a wide grapheme sitting just outside the popup
+	/// visually overflows into the popup's left border cell. The fix clears
+	/// a 1-cell margin around the popup, so the border is preserved.
+	#[test]
+	fn msg_popup_left_border_survives_adjacent_wide_char() {
+		let env = Environment::test_env();
+		let mut popup = MsgPopup::new(&env);
+		// CJK info message — exercises wide-char rendering inside the popup.
+		popup
+			.show_info("复制完成：测试中文路径/文件.txt")
+			.expect("show_info");
+
+		// Terminal size chosen so the popup lands at a known position:
+		// POPUP_HEIGHT=25, MINIMUM_WIDTH=60, message line is short so
+		// width=60. centered_rect_absolute => x=(100-60)/2=20,
+		// y=(30-25)/2=2, size 60x25.
+		let backend = TestBackend::new(100, 30);
+		let mut terminal =
+			Terminal::new(backend).expect("create terminal");
+
+		terminal
+			.draw(|f| {
+				// Fill the frame buffer with CJK chars to simulate a
+				// fullscreen diff background behind the popup.
+				for y in 0..f.area().height {
+					for x in 0..f.area().width {
+						f.buffer_mut()[(x, y)].set_symbol("中");
+					}
+				}
+				popup.draw(f, f.area()).expect("draw failed");
+			})
+			.expect("terminal draw");
+
+		let buf = terminal.backend().buffer();
+		// Popup area is x=20..80, y=2..27. Check the left border at the
+		// popup's vertical middle (y=14): it must be the thick vertical
+		// border glyph, not a CJK char that overflowed from x=19.
+		assert_eq!(
+			buf[(20, 14)].symbol(),
+			"┃",
+			"left border must not be stomped by adjacent CJK"
+		);
+		// The cell just outside the popup (x=19) must be cleared so the
+		// CJK char there cannot visually extend into the border.
+		assert_eq!(
+			buf[(19, 14)].symbol(),
+			" ",
+			"cell adjacent to popup must be cleared"
+		);
+		// Right border must also survive.
+		assert_eq!(
+			buf[(79, 14)].symbol(),
+			"┃",
+			"right border must not be stomped by CJK content"
+		);
 	}
 }
