@@ -639,7 +639,20 @@ impl DrawableComponent for TextInputComponent {
 				)
 			};
 
-			f.render_widget(Clear, area);
+			// For popups (non-embed), clear a 1-cell margin around the
+			// area so a wide (CJK/emoji) grapheme just outside the
+			// popup cannot visually overflow into the popup's border.
+			let clear_area = if self.embed {
+				area
+			} else {
+				Rect::new(
+					area.x.saturating_sub(1),
+					area.y.saturating_sub(1),
+					area.width.saturating_add(2),
+					area.height.saturating_add(2),
+				)
+			};
+			f.render_widget(Clear, clear_area);
 
 			f.render_widget(ta, area);
 
