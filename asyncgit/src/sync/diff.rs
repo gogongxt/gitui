@@ -211,6 +211,42 @@ pub fn get_diff(
 	raw_diff_to_file_diff(&diff, work_dir)
 }
 
+/// total (added, deleted) lines across all staged files
+pub fn get_staged_line_stats(
+	repo_path: &RepoPath,
+	options: Option<DiffOptions>,
+) -> Result<(usize, usize)> {
+	scope_time!("get_staged_line_stats");
+
+	let items = super::status::get_status(
+		repo_path,
+		super::status::StatusType::Stage,
+		None,
+	)?;
+
+	let (added, deleted) = items.iter().fold(
+		(0usize, 0usize),
+		|(added, deleted), item| {
+			let Ok(diff) =
+				get_diff(repo_path, &item.path, true, options)
+			else {
+				return (added, deleted);
+			};
+
+			diff.hunks.iter().flat_map(|hunk| hunk.lines.iter()).fold(
+				(added, deleted),
+				|(a, d), line| match line.line_type {
+					DiffLineType::Add => (a + 1, d),
+					DiffLineType::Delete => (a, d + 1),
+					_ => (a, d),
+				},
+			)
+		},
+	);
+
+	Ok((added, deleted))
+}
+
 /// returns diff of a specific file inside a commit
 /// see `get_commit_diff`
 pub fn get_diff_commit(
@@ -415,7 +451,7 @@ fn new_file_content(path: &Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-	use super::{get_diff, get_diff_commit};
+	use super::{get_diff, get_diff_commit, get_staged_line_stats};
 	use crate::{
 		error::Result,
 		sync::{
@@ -485,6 +521,80 @@ mod tests {
 		.unwrap();
 
 		assert_eq!(diff.hunks.len(), 1);
+	}
+
+	#[test]
+	fn test_staged_line_stats_empty() {
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		assert_eq!(
+			get_staged_line_stats(repo_path, None).unwrap(),
+			(0, 0)
+		);
+	}
+
+	#[test]
+	fn test_staged_line_stats_add_delete() {
+		let file_path = Path::new("foo.txt");
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		// commit initial content
+		File::create(root.join(file_path))
+			.unwrap()
+			.write_all(b"a\nb\nc\nd\n")
+			.unwrap();
+		stage_add_file(repo_path, file_path).unwrap();
+		commit(repo_path, "init").unwrap();
+
+		// stage a mix of additions and deletions
+		fs::write(root.join(file_path), b"a\nB\nc\nd\ne\nf\n")
+			.unwrap();
+		stage_add_file(repo_path, file_path).unwrap();
+
+		// +B, +e, +f (3 adds); original b line deleted (1 del)
+		assert_eq!(
+			get_staged_line_stats(repo_path, None).unwrap(),
+			(3, 1)
+		);
+	}
+
+	#[test]
+	fn test_staged_line_stats_sums_across_files() {
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		File::create(root.join("a.txt"))
+			.unwrap()
+			.write_all(b"first\n")
+			.unwrap();
+		stage_add_file(repo_path, Path::new("a.txt")).unwrap();
+		commit(repo_path, "init").unwrap();
+
+		File::create(root.join("a.txt"))
+			.unwrap()
+			.write_all(b"first\nsecond\n")
+			.unwrap();
+		stage_add_file(repo_path, Path::new("a.txt")).unwrap();
+
+		File::create(root.join("b.txt"))
+			.unwrap()
+			.write_all(b"x\ny\n")
+			.unwrap();
+		stage_add_file(repo_path, Path::new("b.txt")).unwrap();
+
+		// a.txt: +1 -0, b.txt (new file): +2 -0
+		assert_eq!(
+			get_staged_line_stats(repo_path, None).unwrap(),
+			(3, 0)
+		);
 	}
 
 	static HUNK_A: &str = r"

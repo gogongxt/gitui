@@ -76,6 +76,9 @@ pub struct Status {
 	git_status_workdir: AsyncStatus,
 	git_status_stage: AsyncStatus,
 	git_branch_state: Option<BranchCompare>,
+	/// (added, deleted) line counts across all staged files,
+	/// shown on the Staged pane's top border.
+	staged_line_stats: (usize, usize),
 	git_branch_name: cached::BranchName,
 	queue: Queue,
 	git_action_executed: bool,
@@ -199,6 +202,7 @@ impl Status {
 			),
 			git_action_executed: false,
 			git_branch_state: None,
+			staged_line_stats: (0, 0),
 			git_branch_name: cached::BranchName::new(
 				env.repo.clone(),
 			),
@@ -213,6 +217,7 @@ impl Status {
 		f: &mut ratatui::Frame,
 		chunks: &[ratatui::layout::Rect],
 	) {
+		// Branch info: always on the Unstaged pane's top row.
 		if let Some(branch_name) = self.git_branch_name.last() {
 			let ahead_behind = self
 				.git_branch_state
@@ -229,14 +234,23 @@ impl Status {
 			))
 			.alignment(Alignment::Right);
 
-			let mut rect = if self.index_wd.focused() {
-				let mut rect = chunks[0];
-				rect.y += rect.height.saturating_sub(1);
-				rect
-			} else {
-				chunks[1]
-			};
+			let mut rect = chunks[0];
+			rect.x += 1;
+			rect.width = rect.width.saturating_sub(2);
+			rect.height = rect
+				.height
+				.saturating_sub(rect.height.saturating_sub(1));
 
+			f.render_widget(w, rect);
+		}
+
+		// Staged line stats: always on the Staged pane's top row.
+		let (added, deleted) = self.staged_line_stats;
+		if added > 0 || deleted > 0 {
+			let w = Paragraph::new(format!("(+{added} -{deleted})"))
+				.alignment(Alignment::Right);
+
+			let mut rect = chunks[1];
 			rect.x += 1;
 			rect.width = rect.width.saturating_sub(2);
 			rect.height = rect
@@ -464,6 +478,12 @@ impl Status {
 	fn update_status(&mut self) -> Result<()> {
 		let stage_status = self.git_status_stage.last()?;
 		self.index.set_items(&stage_status.items)?;
+
+		self.staged_line_stats = sync::diff::get_staged_line_stats(
+			&self.repo.borrow(),
+			Some(self.options.borrow().diff_options()),
+		)
+		.unwrap_or((0, 0));
 
 		let workdir_status = self.git_status_workdir.last()?;
 		self.index_wd.set_items(&workdir_status.items)?;
