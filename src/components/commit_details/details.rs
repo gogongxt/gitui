@@ -83,9 +83,12 @@ impl DetailsComponent {
 						strings::POPUP_FAIL_COPY.to_string(),
 					));
 				} else {
-					self.queue.push(InternalEvent::ShowInfoMsg(
-						strings::copy_success(&text),
-					));
+					self.queue.push(
+						InternalEvent::ShowInfoLabeledMsg(
+							strings::POPUP_SUCCESS_COPY.to_string(),
+							strings::copy_success(&text),
+						),
+					);
 				}
 			}
 		}
@@ -109,7 +112,8 @@ impl DetailsComponent {
 					strings::POPUP_FAIL_COPY.to_string(),
 				));
 			} else {
-				self.queue.push(InternalEvent::ShowInfoMsg(
+				self.queue.push(InternalEvent::ShowInfoLabeledMsg(
+					strings::POPUP_SUCCESS_COPY.to_string(),
 					strings::copy_success(&text),
 				));
 			}

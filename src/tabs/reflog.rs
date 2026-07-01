@@ -267,7 +267,8 @@ impl Reflog {
 		if let Some(entry) = self.selected_entry() {
 			let hash = entry.new_oid.to_string();
 			crate::clipboard::copy_string(&hash)?;
-			self.queue.push(InternalEvent::ShowInfoMsg(
+			self.queue.push(InternalEvent::ShowInfoLabeledMsg(
+				strings::POPUP_SUCCESS_COPY.to_string(),
 				strings::copy_success(&hash),
 			));
 		}

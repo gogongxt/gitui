@@ -453,7 +453,7 @@ pub fn rename_branch_popup_msg(
 }
 
 pub fn copy_success(s: &str) -> String {
-	format!("{POPUP_SUCCESS_COPY} \"{s}\"")
+	s.to_string()
 }
 
 pub fn ellipsis_trim_start(s: &str, width: usize) -> Cow<'_, str> {

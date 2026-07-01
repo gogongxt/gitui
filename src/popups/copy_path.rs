@@ -170,7 +170,8 @@ impl CopyPathPopup {
 			} else {
 				value
 			};
-			self.queue.push(InternalEvent::ShowInfoMsg(
+			self.queue.push(InternalEvent::ShowInfoLabeledMsg(
+				strings::POPUP_SUCCESS_COPY.to_string(),
 				strings::copy_success(&label),
 			));
 		}

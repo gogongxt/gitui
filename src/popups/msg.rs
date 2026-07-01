@@ -22,6 +22,9 @@ use ui::style::SharedTheme;
 pub struct MsgPopup {
 	title: String,
 	msg: String,
+	/// Optional green label rendered as the first line of the body,
+	/// above `msg`. Used by copy-success popups ("Copied Text:").
+	label: Option<String>,
 	visible: bool,
 	theme: SharedTheme,
 	key_config: SharedKeyConfig,
@@ -40,10 +43,13 @@ impl DrawableComponent for MsgPopup {
 
 		let max_width = f.area().width.max(MINIMUM_WIDTH);
 
-		// determine the maximum width of text block
+		// determine the maximum width of text block, accounting for
+		// the optional label line.
+		let label = self.label.as_deref().unwrap_or("");
 		let width = self
 			.msg
 			.lines()
+			.chain(std::iter::once(label))
 			.map(str::len)
 			.max()
 			.unwrap_or(0)
@@ -63,7 +69,8 @@ impl DrawableComponent for MsgPopup {
 
 		let msg_lines: Vec<String> =
 			wrapped_msg.lines().map(String::from).collect();
-		let line_num = msg_lines.len();
+		let line_num =
+			msg_lines.len() + usize::from(self.label.is_some());
 
 		let height = POPUP_HEIGHT
 			.saturating_sub(BORDER_WIDTH)
@@ -72,17 +79,30 @@ impl DrawableComponent for MsgPopup {
 		let top =
 			self.scroll.update_no_selection(line_num, height.into());
 
-		let scrolled_lines = msg_lines
-			.iter()
-			.skip(top)
-			.take(height.into())
-			.map(|line| {
-				Line::from(vec![Span::styled(
-					line.clone(),
-					self.theme.text(true, false),
-				)])
-			})
-			.collect::<Vec<Line>>();
+		let mut scrolled_lines: Vec<Line<'_>> = Vec::new();
+
+		// The label (if any) is the first line; render it green.
+		let has_label = self.label.is_some();
+		if top == 0 && has_label {
+			scrolled_lines.push(Line::from(vec![Span::styled(
+				self.label.clone().unwrap_or_default(),
+				self.theme.commit_author(false),
+			)]));
+		}
+
+		let body_skip = top.saturating_sub(usize::from(has_label));
+		let remaining = (usize::from(height))
+			.saturating_sub(scrolled_lines.len());
+		scrolled_lines.extend(
+			msg_lines.iter().skip(body_skip).take(remaining).map(
+				|line| {
+					Line::from(vec![Span::styled(
+						line.clone(),
+						self.theme.text(true, false),
+					)])
+				},
+			),
+		);
 
 		// Clear a 1-cell margin around the popup so that a wide
 		// (CJK/emoji) grapheme sitting just outside the popup area
@@ -181,6 +201,7 @@ impl MsgPopup {
 		Self {
 			title: String::new(),
 			msg: String::new(),
+			label: None,
 			visible: false,
 			theme: env.theme.clone(),
 			key_config: env.key_config.clone(),
@@ -195,6 +216,7 @@ impl MsgPopup {
 	) -> Result<()> {
 		self.title = title;
 		self.msg = msg.to_string();
+		self.label = None;
 		self.scroll.reset();
 		self.show()
 	}
@@ -213,6 +235,21 @@ impl MsgPopup {
 			msg,
 			strings::msg_title_info(&self.key_config),
 		)
+	}
+
+	/// Show an info popup with a green label line above the body.
+	/// A `:` is appended to the label. Used for copy-success popups
+	/// so the "Copied Text:" label stands out from the content.
+	pub fn show_info_labeled(
+		&mut self,
+		label: &str,
+		msg: &str,
+	) -> Result<()> {
+		self.title = strings::msg_title_info(&self.key_config);
+		self.msg = msg.to_string();
+		self.label = Some(format!("{label}:"));
+		self.scroll.reset();
+		self.show()
 	}
 }
 

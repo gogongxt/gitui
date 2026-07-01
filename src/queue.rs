@@ -95,6 +95,10 @@ pub enum InternalEvent {
 	ShowErrorMsg(String),
 	///
 	ShowInfoMsg(String),
+	/// Like `ShowInfoMsg` but with a green label line shown above the
+	/// body. Used for copy-success popups so the "Copied Text:" label
+	/// stands out from the copied content.
+	ShowInfoLabeledMsg(String, String),
 	///
 	Update(NeedsUpdate),
 	///

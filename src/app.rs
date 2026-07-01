@@ -774,6 +774,14 @@ impl App {
 				flags
 					.insert(NeedsUpdate::ALL | NeedsUpdate::COMMANDS);
 			}
+			InternalEvent::ShowInfoLabeledMsg(label, msg) => {
+				self.msg_popup.show_info_labeled(
+					label.as_str(),
+					msg.as_str(),
+				)?;
+				flags
+					.insert(NeedsUpdate::ALL | NeedsUpdate::COMMANDS);
+			}
 			InternalEvent::Update(u) => flags.insert(u),
 			InternalEvent::OpenCommit => self.commit_popup.show()?,
 			InternalEvent::RewordCommit(id) => {

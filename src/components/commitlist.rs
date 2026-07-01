@@ -162,7 +162,8 @@ impl CommitList {
 	pub fn copy_commit_hash(&self) -> Result<()> {
 		if let Some(yank) = self.concat_selected_commit_ids() {
 			crate::clipboard::copy_string(&yank)?;
-			self.queue.push(InternalEvent::ShowInfoMsg(
+			self.queue.push(InternalEvent::ShowInfoLabeledMsg(
+				strings::POPUP_SUCCESS_COPY.to_string(),
 				strings::copy_success(&yank),
 			));
 		}
