@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.11] - 2026-07-01
+
+### Added
+* the commit details panel now has a 3-way focus cycle: `Info` → `Message` → `Files` (via `move_up`/`move_down`, stop at ends). Previously only `Message` and `Files` were focusable. The `Info` pane grows from 8 to 12 rows when focused (fitting all 7 content lines + border), gains its own scrollbar, and `y` on the `Info` pane copies the full `Author`/`Date`/`Sha`/`Tags` block to the clipboard. The copy text is extracted from the same `get_text_info` lines used to render, so it always matches the display. The fullscreen `InspectCommit` popup (right-arrow) now opens focused on `Files` instead of `Message`.
+* copy-success popups now show a green `Copied Text:` label line above the copied content, instead of inlining `Copied Text "..."` into the body. The label uses the theme's green (`commit_author`); the body stays in normal text. A new `ShowInfoLabeledMsg(label, body)` queue variant backs this; tag-annotation popups keep their plain single-color appearance.
+
+### Fixed
+* the author column in the commit list is now a fixed width (`AUTHOR_WIDTH = 18`) instead of being derived from pane width (`(width - 19) / 3` clamped to [3, 20]). Opening the right details pane (which shrinks the list) no longer thins the author→message gap — the gap stays stable regardless of pane state.
+
+### Changed
+* the `Tags:` section in the commit details Info pane now shows the label and all tag names on a single line (`Tags:  v2.10, v2.9`), separated by `, `. Previously the label sat alone on its own line and tag names were packed onto a separate line joined by `,` (no space), wasting a row and reading awkwardly for a single tag. The `copy_info` output follows automatically since it extracts from the same rendered lines.
+
 ## [v2.10] - 2026-06-30
 
 ### Added
