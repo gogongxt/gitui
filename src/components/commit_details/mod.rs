@@ -19,11 +19,19 @@ use asyncgit::{
 };
 use compare_details::CompareDetailsComponent;
 use crossterm::event::Event;
-use details::DetailsComponent;
+use details::{DetailsComponent, DetailsFocus};
 use ratatui::{
 	layout::{Constraint, Direction, Layout, Rect},
 	Frame,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+	None,
+	Info,
+	Message,
+	Files,
+}
 
 pub struct CommitDetailsComponent {
 	commit: Option<CommitFilesParams>,
@@ -32,6 +40,7 @@ pub struct CommitDetailsComponent {
 	file_tree: StatusTreeComponent,
 	git_commit_files: AsyncCommitFiles,
 	visible: bool,
+	focus: Focus,
 	key_config: SharedKeyConfig,
 }
 
@@ -49,6 +58,7 @@ impl CommitDetailsComponent {
 			),
 			file_tree: StatusTreeComponent::new(env, "", false),
 			visible: false,
+			focus: Focus::None,
 			commit: None,
 			key_config: env.key_config.clone(),
 		}
@@ -120,17 +130,39 @@ impl CommitDetailsComponent {
 		&self.file_tree
 	}
 
-	fn details_focused(&self) -> bool {
-		self.single_details.focused()
-			|| self.compare_details.focused()
-	}
+	fn set_focus(&mut self, focus: Focus) {
+		// Unfocus everything first.
+		self.single_details.focus(false);
+		self.compare_details.focus(false);
+		self.file_tree.focus(false);
 
-	fn set_details_focus(&mut self, focus: bool) {
-		if self.is_compare() {
-			self.compare_details.focus(focus);
-		} else {
-			self.single_details.focus(focus);
+		match focus {
+			Focus::None => {}
+			Focus::Info => {
+				if self.is_compare() {
+					// Compare mode has no Info pane; fall back to
+					// Message.
+					self.compare_details.focus(true);
+					self.focus = Focus::Message;
+					return;
+				}
+				self.single_details.set_focus(DetailsFocus::Info);
+			}
+			Focus::Message => {
+				if self.is_compare() {
+					self.compare_details.focus(true);
+				} else {
+					self.single_details
+						.set_focus(DetailsFocus::Message);
+				}
+			}
+			Focus::Files => {
+				self.file_tree.focus(true);
+				self.file_tree.show_selection(true);
+			}
 		}
+
+		self.focus = focus;
 	}
 
 	/// Unfocus both the message pane and the file tree. Used when the
@@ -139,8 +171,7 @@ impl CommitDetailsComponent {
 	/// the commit message instead, open the fullscreen `InspectCommit`
 	/// popup (right-arrow), which focuses the message pane.
 	pub fn focus_details(&mut self) {
-		self.set_details_focus(false);
-		self.file_tree.focus(false);
+		self.set_focus(Focus::None);
 	}
 
 	fn is_compare(&self) -> bool {
@@ -157,13 +188,9 @@ impl DrawableComponent for CommitDetailsComponent {
 		let constraints = if self.is_compare() {
 			[Constraint::Length(10), Constraint::Min(0)]
 		} else {
-			let details_focused = self.details_focused();
-			let percentages = if self.file_tree.focused() {
-				(40, 60)
-			} else if details_focused {
-				(60, 40)
-			} else {
-				(40, 60)
+			let percentages = match self.focus {
+				Focus::Info | Focus::Message => (60, 40),
+				Focus::Files | Focus::None => (40, 60),
 			};
 
 			[
@@ -216,30 +243,38 @@ impl Component for CommitDetailsComponent {
 			return Ok(EventState::Consumed);
 		}
 
-		if self.focused() {
+		if self.focused() && !self.is_compare() {
 			if let Event::Key(e) = ev {
-				return if (key_match(
-					e,
-					self.key_config.keys.move_down,
-				) || key_match(
-					e,
-					self.key_config.keys.popup_down,
-				)) && self.details_focused()
-				{
-					self.set_details_focus(false);
-					self.file_tree.focus(true);
-					Ok(EventState::Consumed)
-				} else if (key_match(e, self.key_config.keys.move_up)
-					|| key_match(e, self.key_config.keys.popup_up))
-					&& self.file_tree.focused()
-					&& !self.is_compare()
-				{
-					self.file_tree.focus(false);
-					self.set_details_focus(true);
-					Ok(EventState::Consumed)
-				} else {
-					Ok(EventState::NotConsumed)
-				};
+				let down =
+					key_match(e, self.key_config.keys.move_down)
+						|| key_match(
+							e,
+							self.key_config.keys.popup_down,
+						);
+				let up = key_match(e, self.key_config.keys.move_up)
+					|| key_match(e, self.key_config.keys.popup_up);
+
+				if down {
+					let next = match self.focus {
+						Focus::Info => Some(Focus::Message),
+						Focus::Message => Some(Focus::Files),
+						Focus::Files | Focus::None => None,
+					};
+					if let Some(next) = next {
+						self.set_focus(next);
+						return Ok(EventState::Consumed);
+					}
+				} else if up {
+					let prev = match self.focus {
+						Focus::Files => Some(Focus::Message),
+						Focus::Message => Some(Focus::Info),
+						Focus::Info | Focus::None => None,
+					};
+					if let Some(prev) = prev {
+						self.set_focus(prev);
+						return Ok(EventState::Consumed);
+					}
+				}
 			}
 		}
 
@@ -259,13 +294,14 @@ impl Component for CommitDetailsComponent {
 	}
 
 	fn focused(&self) -> bool {
-		self.details_focused() || self.file_tree.focused()
+		self.focus != Focus::None
 	}
 
 	fn focus(&mut self, focus: bool) {
-		self.single_details.focus(false);
-		self.compare_details.focus(false);
-		self.file_tree.focus(focus);
-		self.file_tree.show_selection(true);
+		if focus {
+			self.set_focus(Focus::Files);
+		} else {
+			self.set_focus(Focus::None);
+		}
 	}
 }

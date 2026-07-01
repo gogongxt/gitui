@@ -28,14 +28,25 @@ use sync::CommitTags;
 
 use super::style::Detail;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DetailsFocus {
+	Info,
+	Message,
+}
+
 pub struct DetailsComponent {
 	repo: RepoPathRef,
 	data: Option<CommitDetails>,
 	tags: Vec<Tag>,
 	theme: SharedTheme,
-	focused: bool,
+	/// Whether this component is the focused sub-component of the
+	/// parent (`CommitDetailsComponent`). Distinct from `focus`,
+	/// which tracks *which* of Info/Message is focused within.
+	details_focused: bool,
+	focus: DetailsFocus,
 	current_width: Cell<u16>,
 	scroll: VerticalScroll,
+	info_scroll: VerticalScroll,
 	scroll_to_bottom_next_draw: Cell<bool>,
 	key_config: SharedKeyConfig,
 	queue: Queue,
@@ -52,10 +63,12 @@ impl DetailsComponent {
 			data: None,
 			tags: Vec::new(),
 			theme: env.theme.clone(),
-			focused,
+			details_focused: focused,
+			focus: DetailsFocus::Message,
 			scroll_to_bottom_next_draw: Cell::new(false),
 			current_width: Cell::new(0),
 			scroll: VerticalScroll::new(),
+			info_scroll: VerticalScroll::new(),
 			key_config: env.key_config.clone(),
 			queue: env.queue.clone(),
 		}
@@ -78,6 +91,52 @@ impl DetailsComponent {
 		}
 	}
 
+	fn copy_info(&self) {
+		if self.data.is_some() {
+			let lines = self.get_text_info();
+			let text = lines
+				.iter()
+				.map(|line| {
+					line.spans
+						.iter()
+						.map(|span| span.content.as_ref())
+						.collect::<String>()
+				})
+				.collect::<Vec<_>>()
+				.join("\n");
+			if crate::clipboard::copy_string(&text).is_err() {
+				self.queue.push(InternalEvent::ShowErrorMsg(
+					strings::POPUP_FAIL_COPY.to_string(),
+				));
+			} else {
+				self.queue.push(InternalEvent::ShowInfoMsg(
+					strings::copy_success(&text),
+				));
+			}
+		}
+	}
+
+	pub fn set_focus(&mut self, focus: DetailsFocus) {
+		match focus {
+			DetailsFocus::Info => {
+				self.info_scroll.reset();
+			}
+			DetailsFocus::Message => {
+				self.scroll_to_bottom_next_draw.set(true);
+			}
+		}
+		self.details_focused = true;
+		self.focus = focus;
+	}
+
+	pub fn is_info_focused(&self) -> bool {
+		self.details_focused && self.focus == DetailsFocus::Info
+	}
+
+	pub fn is_message_focused(&self) -> bool {
+		self.details_focused && self.focus == DetailsFocus::Message
+	}
+
 	pub fn set_commit(
 		&mut self,
 		id: Option<CommitId>,
@@ -90,6 +149,7 @@ impl DetailsComponent {
 		});
 
 		self.scroll.reset();
+		self.info_scroll.reset();
 
 		if let Some(tags) = tags {
 			self.tags.extend(tags);
@@ -271,6 +331,14 @@ impl DetailsComponent {
 			false
 		}
 	}
+
+	fn move_info_scroll_top(&self, move_type: ScrollType) -> bool {
+		if self.data.is_some() {
+			self.info_scroll.move_top(move_type)
+		} else {
+			false
+		}
+	}
 }
 
 impl DrawableComponent for DetailsComponent {
@@ -278,28 +346,65 @@ impl DrawableComponent for DetailsComponent {
 		const CANSCROLL_STRING: &str = "[\u{2026}]";
 		const EMPTY_STRING: &str = "";
 
+		let info_focused = self.is_info_focused();
+		let info_len = if info_focused { 12 } else { 8 };
+
 		let chunks = Layout::default()
 			.direction(Direction::Vertical)
 			.constraints(
-				[Constraint::Length(8), Constraint::Min(10)].as_ref(),
+				[Constraint::Length(info_len), Constraint::Min(10)]
+					.as_ref(),
 			)
 			.split(rect);
 
+		// We have to take the border into account which is one
+		// character on each side.
+		let border_width: u16 = 2;
+
+		let info_height =
+			chunks[0].height.saturating_sub(border_width);
+
+		let info_lines = self.get_text_info();
+		let info_line_count = info_lines.len();
+
+		self.info_scroll.update_no_selection(
+			info_line_count,
+			usize::from(info_height),
+		);
+
+		let info_visible: Vec<Line<'_>> = info_lines
+			.iter()
+			.skip(self.info_scroll.get_top())
+			.take(usize::from(info_height))
+			.cloned()
+			.collect();
+
+		let info_can_scroll =
+			usize::from(info_height) < info_line_count;
+
 		f.render_widget(
 			dialog_paragraph(
-				&strings::commit::details_info_title(
-					&self.key_config,
+				&format!(
+					"{} {}",
+					strings::commit::details_info_title(
+						&self.key_config,
+					),
+					if !info_focused && info_can_scroll {
+						CANSCROLL_STRING
+					} else {
+						EMPTY_STRING
+					}
 				),
-				Text::from(self.get_text_info()),
+				Text::from(info_visible),
 				&self.theme,
-				false,
+				info_focused,
 			),
 			chunks[0],
 		);
 
-		// We have to take the border into account which is one character on
-		// each side.
-		let border_width: u16 = 2;
+		if info_focused {
+			self.info_scroll.draw(f, chunks[0], &self.theme);
+		}
 
 		let width = chunks[1].width.saturating_sub(border_width);
 		let height = chunks[1].height.saturating_sub(border_width);
@@ -321,6 +426,7 @@ impl DrawableComponent for DetailsComponent {
 			self.scroll_to_bottom_next_draw.set(false);
 		}
 
+		let message_focused = self.is_message_focused();
 		let can_scroll = usize::from(height) < number_of_lines;
 
 		f.render_widget(
@@ -330,7 +436,7 @@ impl DrawableComponent for DetailsComponent {
 					strings::commit::details_message_title(
 						&self.key_config,
 					),
-					if !self.focused && can_scroll {
+					if !message_focused && can_scroll {
 						CANSCROLL_STRING
 					} else {
 						EMPTY_STRING
@@ -341,12 +447,12 @@ impl DrawableComponent for DetailsComponent {
 					height as usize,
 				)),
 				&self.theme,
-				self.focused,
+				message_focused,
 			),
 			chunks[1],
 		);
 
-		if self.focused {
+		if message_focused {
 			self.scroll.draw(f, chunks[1], &self.theme);
 		}
 
@@ -364,80 +470,142 @@ impl Component for DetailsComponent {
 		let number_of_lines =
 			Self::get_number_of_lines(self.data.as_ref(), width);
 
-		out.push(
-			CommandInfo::new(
-				strings::commands::navigate_commit_message(
-					&self.key_config,
-				),
-				number_of_lines > 0,
-				self.focused || force_all,
-			)
-			.order(order::NAV),
-		);
+		let active = self.details_focused || force_all;
 
-		let has_message = self
-			.data
-			.as_ref()
-			.and_then(|d| d.message.as_ref())
-			.is_some();
-		out.push(
-			CommandInfo::new(
-				strings::commands::copy_message(&self.key_config),
-				has_message,
-				self.focused || force_all,
-			)
-			.order(order::NAV),
-		);
+		match self.focus {
+			DetailsFocus::Message => {
+				out.push(
+					CommandInfo::new(
+						strings::commands::navigate_commit_message(
+							&self.key_config,
+						),
+						number_of_lines > 0,
+						active,
+					)
+					.order(order::NAV),
+				);
+
+				let has_message = self
+					.data
+					.as_ref()
+					.and_then(|d| d.message.as_ref())
+					.is_some();
+				out.push(
+					CommandInfo::new(
+						strings::commands::copy_message(
+							&self.key_config,
+						),
+						has_message,
+						active,
+					)
+					.order(order::NAV),
+				);
+			}
+			DetailsFocus::Info => {
+				out.push(
+					CommandInfo::new(
+						strings::commands::navigate_commit_message(
+							&self.key_config,
+						),
+						self.data.is_some(),
+						active,
+					)
+					.order(order::NAV),
+				);
+				out.push(
+					CommandInfo::new(
+						strings::commands::copy_info(
+							&self.key_config,
+						),
+						self.data.is_some(),
+						active,
+					)
+					.order(order::NAV),
+				);
+			}
+		}
 
 		CommandBlocking::PassingOn
 	}
 
 	fn event(&mut self, event: &Event) -> Result<EventState> {
-		if self.focused {
-			if let Event::Key(e) = event {
-				return Ok(
-					if key_match(e, self.key_config.keys.copy) {
+		if !self.details_focused {
+			return Ok(EventState::NotConsumed);
+		}
+
+		if let Event::Key(e) = event {
+			let keys = &self.key_config.keys;
+			let scroll_key = key_match(e, keys.move_up)
+				|| key_match(e, keys.popup_up)
+				|| key_match(e, keys.move_down)
+				|| key_match(e, keys.page_up)
+				|| key_match(e, keys.page_down)
+				|| key_match(e, keys.home)
+				|| key_match(e, keys.end)
+				|| key_match(e, keys.shift_up)
+				|| key_match(e, keys.shift_down);
+
+			match self.focus {
+				DetailsFocus::Message => {
+					if key_match(e, keys.copy) {
 						self.copy_message();
-						EventState::Consumed
-					} else if key_match(
-						e,
-						self.key_config.keys.move_up,
-					) || key_match(
-						e,
-						self.key_config.keys.popup_up,
-					) {
-						self.move_scroll_top(ScrollType::Up).into()
-					} else if key_match(
-						e,
-						self.key_config.keys.move_down,
-					) {
-						self.move_scroll_top(ScrollType::Down).into()
-					} else if key_match(
-						e,
-						self.key_config.keys.page_up,
-					) {
-						self.move_scroll_top(ScrollType::PageUp)
-							.into()
-					} else if key_match(
-						e,
-						self.key_config.keys.page_down,
-					) {
-						self.move_scroll_top(ScrollType::PageDown)
-							.into()
-					} else if key_match(e, self.key_config.keys.home)
-						|| key_match(e, self.key_config.keys.shift_up)
-					{
-						self.move_scroll_top(ScrollType::Home).into()
-					} else if key_match(e, self.key_config.keys.end)
-						|| key_match(
-							e,
-							self.key_config.keys.shift_down,
-						) {
-						self.move_scroll_top(ScrollType::End).into()
-					} else {
-						EventState::NotConsumed
-					},
-				);
+						return Ok(EventState::Consumed);
+					}
+					if scroll_key {
+						let moved = if key_match(e, keys.move_up)
+							|| key_match(e, keys.popup_up)
+						{
+							self.move_scroll_top(ScrollType::Up)
+						} else if key_match(e, keys.move_down) {
+							self.move_scroll_top(ScrollType::Down)
+						} else if key_match(e, keys.page_up) {
+							self.move_scroll_top(ScrollType::PageUp)
+						} else if key_match(e, keys.page_down) {
+							self.move_scroll_top(ScrollType::PageDown)
+						} else if key_match(e, keys.home)
+							|| key_match(e, keys.shift_up)
+						{
+							self.move_scroll_top(ScrollType::Home)
+						} else {
+							self.move_scroll_top(ScrollType::End)
+						};
+						return Ok(moved.into());
+					}
+				}
+				DetailsFocus::Info => {
+					if key_match(e, keys.copy) {
+						self.copy_info();
+						return Ok(EventState::Consumed);
+					}
+					if scroll_key {
+						let moved = if key_match(e, keys.move_up)
+							|| key_match(e, keys.popup_up)
+						{
+							self.move_info_scroll_top(ScrollType::Up)
+						} else if key_match(e, keys.move_down) {
+							self.move_info_scroll_top(
+								ScrollType::Down,
+							)
+						} else if key_match(e, keys.page_up) {
+							self.move_info_scroll_top(
+								ScrollType::PageUp,
+							)
+						} else if key_match(e, keys.page_down) {
+							self.move_info_scroll_top(
+								ScrollType::PageDown,
+							)
+						} else if key_match(e, keys.home)
+							|| key_match(e, keys.shift_up)
+						{
+							self.move_info_scroll_top(
+								ScrollType::Home,
+							)
+						} else {
+							self.move_info_scroll_top(ScrollType::End)
+						};
+						return Ok(moved.into());
+					}
+				}
 			}
 		}
 
@@ -445,17 +613,17 @@ impl Component for DetailsComponent {
 	}
 
 	fn focused(&self) -> bool {
-		self.focused
+		self.details_focused
 	}
 
 	fn focus(&mut self, focus: bool) {
+		self.details_focused = focus;
 		if focus {
-			self.scroll_to_bottom_next_draw.set(true);
+			self.set_focus(DetailsFocus::Message);
 		} else {
 			self.scroll.reset();
+			self.info_scroll.reset();
 		}
-
-		self.focused = focus;
 	}
 }
 

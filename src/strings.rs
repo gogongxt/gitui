@@ -719,6 +719,16 @@ pub mod commands {
 			CMD_GROUP_LOG,
 		)
 	}
+	pub fn copy_info(key_config: &SharedKeyConfig) -> CommandText {
+		CommandText::new(
+			format!(
+				"Copy Info [{}]",
+				key_config.get_hint(key_config.keys.copy),
+			),
+			"copy commit info (author/date/hash/tags) to clipboard",
+			CMD_GROUP_LOG,
+		)
+	}
 	pub fn copy_path(key_config: &SharedKeyConfig) -> CommandText {
 		CommandText::new(
 			format!(
