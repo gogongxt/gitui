@@ -298,26 +298,21 @@ impl DetailsComponent {
 			]));
 
 			if !self.tags.is_empty() {
-				res.push(Line::from(style_detail(
-					&self.theme,
-					&Detail::Sha,
-				)));
-
-				res.push(Line::from(
-					itertools::Itertools::intersperse(
-						self.tags.iter().map(|tag| {
-							Span::styled(
-								Cow::from(&tag.name),
-								self.theme.text(true, false),
-							)
-						}),
-						Span::styled(
-							Cow::from(","),
+				let mut spans =
+					vec![style_detail(&self.theme, &Detail::Sha)];
+				for (i, tag) in self.tags.iter().enumerate() {
+					if i > 0 {
+						spans.push(Span::styled(
+							Cow::from(", "),
 							self.theme.text(true, false),
-						),
-					)
-					.collect::<Vec<Span>>(),
-				));
+						));
+					}
+					spans.push(Span::styled(
+						Cow::from(&tag.name),
+						self.theme.text(true, false),
+					));
+				}
+				res.push(Line::from(spans));
 			}
 
 			res
