@@ -34,6 +34,9 @@ use std::{
 
 const ELEMENTS_PER_LINE: usize = 9;
 const SLICE_SIZE: usize = 1200;
+/// Fixed-width author column. Keeps the author→message gap stable
+/// regardless of pane width (e.g. before/after opening the details pane).
+const AUTHOR_WIDTH: usize = 18;
 
 ///
 pub struct CommitList {
@@ -567,9 +570,7 @@ impl CommitList {
 
 		txt.push(splitter.clone());
 
-		let author_width =
-			(width.saturating_sub(19) / 3).clamp(3, 20);
-		let author = string_width_align(&e.author, author_width);
+		let author = string_width_align(&e.author, AUTHOR_WIDTH);
 
 		// commit author
 		txt.push(Span::styled(author, style_author));
