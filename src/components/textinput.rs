@@ -53,6 +53,11 @@ pub struct TextInputComponent {
 	embed: bool,
 	textarea: Option<TextAreaComponent>,
 	select_state: SelectionState,
+	/// Last-known cursor position. Updated while the textarea is alive
+	/// so it survives `hide()` — `cursor()` falls back to it when the
+	/// textarea is gone. Used to persist the commit draft cursor after
+	/// the popup is closed via c-q.
+	last_cursor: Cell<Option<(u16, u16)>>,
 }
 
 impl TextInputComponent {
@@ -76,6 +81,7 @@ impl TextInputComponent {
 			embed: false,
 			textarea: None,
 			select_state: SelectionState::NotSelecting,
+			last_cursor: Cell::new(None),
 		}
 	}
 
@@ -186,6 +192,35 @@ impl TextInputComponent {
 		self.msg = msg.into();
 		if self.is_visible() {
 			self.show_inner_textarea();
+		}
+	}
+
+	/// Current cursor position as `(row, col)`. Falls back to the
+	/// last-known position when the textarea is not shown (e.g. after
+	/// `hide()`), so callers can persist the cursor after the popup is
+	/// closed. Returns `None` if no cursor was ever recorded.
+	#[allow(clippy::option_if_let_else)]
+	pub fn cursor(&self) -> Option<(u16, u16)> {
+		let live = self.textarea.as_ref().map(|ta| {
+			let (row, col) = ta.cursor();
+			(
+				u16::try_from(row).unwrap_or(u16::MAX),
+				u16::try_from(col).unwrap_or(u16::MAX),
+			)
+		});
+		if let Some(c) = live {
+			self.last_cursor.set(Some(c));
+			Some(c)
+		} else {
+			self.last_cursor.get()
+		}
+	}
+
+	/// Move the cursor to `(row, col)`. Clamped to the text bounds by
+	/// `TextArea`. No-op if the textarea is not shown.
+	pub fn set_cursor(&mut self, row: u16, col: u16) {
+		if let Some(ta) = &mut self.textarea {
+			ta.move_cursor(CursorMove::Jump(row, col));
 		}
 	}
 
@@ -734,6 +769,16 @@ impl Component for TextInputComponent {
 	}
 
 	fn hide(&mut self) {
+		// Cache the cursor before dropping the textarea so callers
+		// can still read it via `cursor()` after hide (used to persist
+		// the commit draft cursor on c-q close).
+		if let Some(ta) = &self.textarea {
+			let (row, col) = ta.cursor();
+			self.last_cursor.set(Some((
+				u16::try_from(row).unwrap_or(u16::MAX),
+				u16::try_from(col).unwrap_or(u16::MAX),
+			)));
+		}
 		self.textarea = None;
 	}
 
@@ -763,6 +808,28 @@ mod tests {
 			ta.move_cursor(CursorMove::Back);
 			assert_eq!(ta.cursor(), (0, 0));
 		}
+	}
+
+	/// `cursor()` must return the last-known position after `hide()`,
+	/// so the commit draft cursor can be persisted when the popup is
+	/// closed via c-q (which calls `hide()` before `persist_draft`
+	/// reads the cursor).
+	#[test]
+	fn cursor_survives_hide() {
+		let env = Environment::test_env();
+		let mut comp = TextInputComponent::new(&env, "", "", false);
+		comp.show_inner_textarea();
+		comp.set_text(String::from("hello\nworld"));
+		comp.set_cursor(1, 3);
+		assert_eq!(comp.cursor(), Some((1, 3)));
+
+		comp.hide();
+		assert!(!comp.is_visible());
+		assert_eq!(
+			comp.cursor(),
+			Some((1, 3)),
+			"cursor should be retained after hide() for draft persistence"
+		);
 	}
 
 	#[test]

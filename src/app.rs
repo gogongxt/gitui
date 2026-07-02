@@ -598,6 +598,7 @@ impl App {
 	fn check_hard_exit(&mut self, ev: &Event) -> bool {
 		if let Event::Key(e) = ev {
 			if key_match(e, self.key_config.keys.exit) {
+				self.commit_popup.persist_draft();
 				self.do_quit = QuitState::Close;
 				return true;
 			}

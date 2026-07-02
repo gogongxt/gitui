@@ -97,6 +97,29 @@ impl CommitPopup {
 		self.git_branch_name.lookup().ok();
 	}
 
+	/// Current text in the commit message input.
+	#[cfg(test)]
+	pub fn get_text(&self) -> String {
+		self.input.get_text().to_string()
+	}
+
+	/// Current cursor position `(row, col)`, or `None` if the input
+	/// is not shown.
+	#[cfg(test)]
+	pub fn cursor(&self) -> Option<(u16, u16)> {
+		self.input.cursor()
+	}
+
+	#[cfg(test)]
+	pub fn text_input_mut(&mut self) -> &mut TextInputComponent {
+		&mut self.input
+	}
+
+	#[cfg(test)]
+	pub fn hide_for_test(&mut self) {
+		self.input.hide();
+	}
+
 	fn draw_branch_name(&self, f: &mut Frame) {
 		if let Some(name) = self.git_branch_name.last() {
 			let w = Paragraph::new(format!("{{{name}}}"))
@@ -222,6 +245,7 @@ impl CommitPopup {
 			self.queue.push(InternalEvent::Update(NeedsUpdate::ALL));
 			self.queue.push(InternalEvent::StatusLastFileMoved);
 			self.input.clear();
+			self.options.borrow_mut().set_commit_draft(None);
 		}
 
 		Ok(())
@@ -314,6 +338,29 @@ impl CommitPopup {
 		self.input.get_text().is_empty()
 	}
 
+	/// Persist the current input text as the commit draft, so it can be
+	/// restored after popup close or app restart. Only applies to
+	/// `Mode::Normal` — Reword/Amend/Merge/Revert have their own message
+	/// sources and must not clobber the draft. An empty input clears the
+	/// stored draft.
+	pub fn persist_draft(&self) {
+		if matches!(self.mode, Mode::Normal) {
+			let text = self.input.get_text().to_string();
+			let cursor = self.input.cursor();
+			let mut opts = self.options.borrow_mut();
+			opts.set_commit_draft(if text.is_empty() {
+				None
+			} else {
+				Some(text)
+			});
+			// set_commit_draft(None) already clears the cursor; only
+			// set it when there's a draft to attach it to.
+			if opts.commit_draft().is_some() {
+				opts.set_commit_draft_cursor(cursor);
+			}
+		}
+	}
+
 	fn is_changed(&self) -> bool {
 		Some(self.input.get_text().trim())
 			!= self.commit_template.as_ref().map(|s| s.trim())
@@ -349,7 +396,12 @@ impl CommitPopup {
 		self.verify = !self.verify;
 	}
 
+	#[allow(clippy::too_many_lines)]
 	pub fn open(&mut self, reword: Option<CommitId>) -> Result<()> {
+		// Cursor position to restore once the textarea is shown.
+		// Set when a saved draft is loaded in the Normal branch below.
+		let mut pending_cursor: Option<(u16, u16)> = None;
+
 		//only clear text if it was not a normal commit dlg before, so to preserve old commit msg that was edited
 		if !matches!(self.mode, Mode::Normal) {
 			self.input.clear();
@@ -424,13 +476,34 @@ impl CommitPopup {
 					});
 
 					let msg_source = if self.is_empty() {
-						if let Some(s) = &self.commit_template {
+						if let Some(draft) = self
+							.options
+							.borrow()
+							.commit_draft()
+							.cloned()
+						{
+							self.input.set_text(draft);
+							// restore saved cursor after the textarea is shown below
+							pending_cursor = self
+								.options
+								.borrow()
+								.commit_draft_cursor();
+							PrepareCommitMsgSource::Message
+						} else if let Some(s) = &self.commit_template
+						{
 							self.input.set_text(s.clone());
 							PrepareCommitMsgSource::Template
 						} else {
 							PrepareCommitMsgSource::Message
 						}
 					} else {
+						// Input still has text from a prior open in this
+						// session (c-q close preserves in-memory text).
+						// The textarea was destroyed on hide, so the
+						// cursor would reset to (0,0) on re-show. Use
+						// the cursor cached in `input` (survives hide)
+						// to restore it.
+						pending_cursor = self.input.cursor();
 						PrepareCommitMsgSource::Message
 					};
 					self.input.set_title(strings::commit_title());
@@ -454,6 +527,13 @@ impl CommitPopup {
 
 		self.commit_msg_history_idx = 0;
 		self.input.show()?;
+
+		// Restore saved cursor position after the textarea is shown.
+		// `set_cursor` clamps to text bounds, so a stale cursor from a
+		// longer previous draft is safe.
+		if let Some((row, col)) = pending_cursor {
+			self.input.set_cursor(row, col);
+		}
 
 		Ok(())
 	}
@@ -589,6 +669,7 @@ impl Component for CommitPopup {
 						self.queue.push(
 							InternalEvent::OpenExternalEditor(None),
 						);
+						self.persist_draft();
 						self.hide();
 						true
 					} else if key_match(
@@ -615,7 +696,12 @@ impl Component for CommitPopup {
 					};
 
 				if !input_consumed {
+					let was_visible = self.input.is_visible();
 					self.input.event(ev)?;
+					if was_visible && !self.input.is_visible() {
+						// popup was just hidden (c-q / exit_popup)
+						self.persist_draft();
+					}
 				}
 
 				// stop key event propagation
