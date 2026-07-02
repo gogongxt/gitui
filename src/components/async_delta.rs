@@ -281,11 +281,13 @@ fn run_delta(
 	match &params.diff_type {
 		asyncgit::DiffType::WorkDir => {
 			git_cmd.arg("diff");
+			git_cmd.arg("--");
 			git_cmd.arg(path);
 		}
 		asyncgit::DiffType::Stage => {
 			git_cmd.arg("diff");
 			git_cmd.arg("--cached");
+			git_cmd.arg("--");
 			git_cmd.arg(path);
 		}
 		asyncgit::DiffType::Commit(commit_id) => {
@@ -836,4 +838,139 @@ pub fn pad_line_bg(
 		);
 	}
 	line
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{run_delta, DeltaParams};
+	use asyncgit::sync::RepoPath;
+	use std::fs;
+	use tempfile::TempDir;
+
+	/// Build a repo with one committed file, then delete the file
+	/// from the workdir. Returns (tempdir, repo_path, filename).
+	fn setup_deleted_workdir() -> (TempDir, RepoPath, String) {
+		let td = TempDir::new().unwrap();
+		for args in [
+			&["init", "-q"][..],
+			&["config", "user.email", "t@t.t"][..],
+			&["config", "user.name", "t"][..],
+		] {
+			let status = std::process::Command::new("git")
+				.args(args)
+				.current_dir(td.path())
+				.status()
+				.unwrap();
+			assert!(status.success(), "git {:?}", args);
+		}
+
+		let file = "foo.txt";
+		fs::write(td.path().join(file), b"line1\nline2\nline3\n")
+			.unwrap();
+		for args in
+			[&["add", file][..], &["commit", "-qm", "init"][..]]
+		{
+			let status = std::process::Command::new("git")
+				.args(args)
+				.current_dir(td.path())
+				.status()
+				.unwrap();
+			assert!(status.success(), "git {:?}", args);
+		}
+
+		fs::remove_file(td.path().join(file)).unwrap();
+
+		let repo_path = RepoPath::Path(td.path().to_path_buf());
+		(td, repo_path, file.to_string())
+	}
+
+	fn make_params(
+		path: &str,
+		diff_type: asyncgit::DiffType,
+	) -> DeltaParams {
+		DeltaParams {
+			path: path.to_string(),
+			diff_type,
+			width: 80,
+			side_by_side: false,
+			diff_hash: 0,
+		}
+	}
+
+	/// `git diff <path>` for a deleted file used to fail with an
+	/// "ambiguous argument" error because the path was passed
+	/// without a `--` separator. The fix adds `--` so the diff is
+	/// produced correctly.
+	#[test]
+	fn run_delta_deleted_workdir() {
+		// Skip if `delta` binary is not on PATH.
+		if std::process::Command::new("delta")
+			.arg("--version")
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.status()
+			.is_err()
+		{
+			eprintln!("skipping: delta binary not on PATH");
+			return;
+		}
+
+		let (_td, repo_path, file) = setup_deleted_workdir();
+		let diff = asyncgit::sync::diff::get_diff(
+			&repo_path, &file, false, None,
+		)
+		.ok();
+		let params = make_params(&file, asyncgit::DiffType::WorkDir);
+		let result = run_delta(&repo_path, &params, diff.as_ref());
+		assert!(
+			result.is_some(),
+			"run_delta should produce output for a deleted workdir file"
+		);
+		let processed = result.unwrap();
+		assert!(
+			!processed.display_lines.is_empty(),
+			"delta output should not be empty for a deleted workdir file"
+		);
+	}
+
+	#[test]
+	fn run_delta_deleted_stage() {
+		if std::process::Command::new("delta")
+			.arg("--version")
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.status()
+			.is_err()
+		{
+			eprintln!("skipping: delta binary not on PATH");
+			return;
+		}
+
+		let (td, repo_path, file) = setup_deleted_workdir();
+
+		// stage the deletion via `git rm` (the workdir file is already
+		// gone, which is exactly the scenario that used to break).
+		let status = std::process::Command::new("git")
+			.args(["rm", "--cached", &file])
+			.current_dir(td.path())
+			.status()
+			.unwrap();
+		assert!(status.success(), "git rm --cached should succeed");
+
+		let diff = asyncgit::sync::diff::get_diff(
+			&repo_path, &file, true, None,
+		)
+		.ok();
+		let params = make_params(&file, asyncgit::DiffType::Stage);
+		let result = run_delta(&repo_path, &params, diff.as_ref());
+		assert!(
+			result.is_some(),
+			"run_delta should produce output for a deleted staged file"
+		);
+		let processed = result.unwrap();
+		assert!(
+			!processed.display_lines.is_empty(),
+			"delta output should not be empty for a deleted staged file"
+		);
+	}
 }
