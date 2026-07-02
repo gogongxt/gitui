@@ -1,5 +1,5 @@
 use crate::app::Environment;
-use crate::keys::key_match;
+use crate::keys::{key_match, GituiKeyEvent};
 use crate::ui::Size;
 use crate::{
 	components::{
@@ -11,7 +11,7 @@ use crate::{
 	ui::{self, style::SharedTheme},
 };
 use anyhow::Result;
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::{Block, Borders};
 use ratatui::{
 	layout::{Alignment, Rect},
@@ -731,9 +731,11 @@ impl Component for TextInputComponent {
 					return Ok(EventState::Consumed);
 				}
 
-				if key_match(e, self.key_config.keys.newline)
-					&& self.input_type == InputType::Multiline
-				{
+				if self.input_type == InputType::Multiline
+					&& is_newline_key(
+						e,
+						&self.key_config.keys.newline,
+					) {
 					ta.insert_newline();
 					true
 				} else {
@@ -788,9 +790,65 @@ impl Component for TextInputComponent {
 	}
 }
 
+/// Whether `ev` should insert a newline in a multiline input.
+///
+/// Matches the configured `newline` binding (Enter by default), and
+/// also accepts Alt+Enter and Shift+Enter unconditionally. This is so
+/// shift+enter works in terminals that send it as `ESC CR` (kitty's
+/// default `map shift+enter send_text all \e\r`), which crossterm
+/// decodes as `Alt+Enter` — and as `Shift+Enter` on terminals that use
+/// the kitty keyboard protocol. Hardcoded so users don't have to
+/// configure each variant.
+fn is_newline_key(ev: &KeyEvent, binding: &GituiKeyEvent) -> bool {
+	if key_match(ev, *binding) {
+		return true;
+	}
+	if ev.code == KeyCode::Enter {
+		let mods = ev.modifiers;
+		return mods == KeyModifiers::ALT
+			|| mods == KeyModifiers::SHIFT;
+	}
+	false
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn is_newline_key_matches_enter_alt_and_shift() {
+		// default `newline` binding is Enter with no modifiers
+		let binding =
+			GituiKeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+
+		let enter =
+			KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+		assert!(is_newline_key(&enter, &binding));
+
+		let alt_enter =
+			KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+		assert!(
+			is_newline_key(&alt_enter, &binding),
+			"Alt+Enter (kitty shift+enter via \\e\\r) should insert a newline"
+		);
+
+		let shift_enter =
+			KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+		assert!(
+			is_newline_key(&shift_enter, &binding),
+			"Shift+Enter should insert a newline"
+		);
+
+		// Ctrl+Enter must NOT be a newline — it's not in the accept set
+		let ctrl_enter =
+			KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+		assert!(!is_newline_key(&ctrl_enter, &binding));
+
+		// a non-Enter key never matches
+		let other =
+			KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty());
+		assert!(!is_newline_key(&other, &binding));
+	}
 
 	#[test]
 	fn test_smoke() {
