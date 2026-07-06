@@ -269,6 +269,7 @@ enum JobState {
 pub struct AsyncSyntaxJob {
 	state: Arc<Mutex<Option<JobState>>>,
 	syntax: String,
+	line_numbers: bool,
 }
 
 impl AsyncSyntaxJob {
@@ -282,7 +283,15 @@ impl AsyncSyntaxJob {
 				content, path,
 			))))),
 			syntax,
+			line_numbers: false,
 		}
+	}
+
+	/// Enable line numbers in the `bat` output. Only affects the
+	/// `bat` path; the `syntect` fallback ignores this.
+	pub const fn with_line_numbers(mut self, enable: bool) -> Self {
+		self.line_numbers = enable;
+		self
 	}
 
 	///
@@ -313,24 +322,25 @@ impl AsyncJob for AsyncSyntaxJob {
 		if let Some(state) = state_mutex.take() {
 			*state_mutex = Some(match state {
 				JobState::Request((content, path)) => {
-					let syntax = try_bat(&content, &path)
-						.unwrap_or_else(|| {
-							SyntaxText::new(
-								content,
-								Path::new(&path),
-								&params,
-								&self.syntax,
-							)
-							.unwrap_or_else(|e| {
-								log::error!(
+					let syntax =
+						try_bat(&content, &path, self.line_numbers)
+							.unwrap_or_else(|| {
+								SyntaxText::new(
+									content,
+									Path::new(&path),
+									&params,
+									&self.syntax,
+								)
+								.unwrap_or_else(|e| {
+									log::error!(
 									"syntect highlight failed: {e}"
 								);
-								SyntaxText::from_ansi(
-									Vec::new(),
-									PathBuf::from(&path),
-								)
-							})
-						});
+									SyntaxText::from_ansi(
+										Vec::new(),
+										PathBuf::from(&path),
+									)
+								})
+							});
 					JobState::Response(syntax)
 				}
 				JobState::Response(res) => JobState::Response(res),
@@ -346,14 +356,26 @@ impl AsyncJob for AsyncSyntaxJob {
 /// Try to highlight `content` via `bat` (looks for `bat` then `batcat` on
 /// PATH). Returns `None` on any failure so the caller falls back to the
 /// built-in `syntect` highlighter. `bat` reads `$BAT_THEME` itself — no
-/// wiring needed here.
-fn try_bat(content: &str, path: &str) -> Option<SyntaxText> {
+/// wiring needed here. When `line_numbers` is true, bat emits a
+/// right-aligned line-number gutter (e.g. `···1`) using
+/// `--style=plain,numbers` instead of `--plain`.
+fn try_bat(
+	content: &str,
+	path: &str,
+	line_numbers: bool,
+) -> Option<SyntaxText> {
 	let bat = find_in_path(["bat", "batcat"])?;
+
+	let style_arg = if line_numbers {
+		"--style=plain,numbers"
+	} else {
+		"--plain"
+	};
 
 	let mut child = Command::new(bat)
 		.args([
 			"--color=always",
-			"--plain",
+			style_arg,
 			"--paging=never",
 			"--file-name",
 			path,

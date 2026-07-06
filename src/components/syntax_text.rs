@@ -118,7 +118,8 @@ impl SyntaxTextComponent {
 							content.clone(),
 							path.clone(),
 							self.theme.get_syntax(),
-						),
+						)
+						.with_line_numbers(true),
 					);
 
 					self.current_file =
