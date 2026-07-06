@@ -12,7 +12,7 @@ use crate::{
 	popups::{BlameFileOpen, CopyPathPopup, FileRevOpen},
 	queue::{InternalEvent, NeedsUpdate, Queue, StackablePopupOpen},
 	strings::{self, order},
-	ui::{self, style::SharedTheme},
+	ui::{self, draw_scrollbar, style::SharedTheme, Orientation},
 };
 use anyhow::Result;
 use asyncgit::{
@@ -450,6 +450,11 @@ impl DrawableComponent for StatusTreeComponent {
 				select.saturating_sub(selection_offset_visible),
 			));
 
+			let visible_count = vec_draw_text_info
+				.iter()
+				.filter(|info| info.visible)
+				.count();
+
 			let items = vec_draw_text_info
 				.iter()
 				.enumerate()
@@ -474,6 +479,18 @@ impl DrawableComponent for StatusTreeComponent {
 				self.focused,
 				&self.theme,
 			);
+
+			if self.focused && visible_count > tree_height {
+				let max_top = visible_count - tree_height;
+				draw_scrollbar(
+					f,
+					r,
+					&self.theme,
+					max_top,
+					self.scroll_top.get(),
+					Orientation::Vertical,
+				);
+			}
 		}
 		Ok(())
 	}
