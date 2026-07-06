@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.12] - 2026-07-06
+
+### Added
+* the Unstaged pane now mirrors the Staged pane's line-count display: `(+N -M)` totals across unstaged tracked files, rendered before the branch info as `(+194 -13) (mymaster ↑3 ↓0)`. Untracked files are excluded so the count reflects only changes to files git already tracks. Backed by a new `get_unstaged_line_stats` helper that sums add/delete lines over `get_diff(..., stage=false)`.
+* the commit popup now accepts `shift+enter` and `alt+enter` as newlines, in addition to the configured `newline` key. Previously `shift+enter` didn't work: kitty maps it to `\e\r`, which crossterm decodes as `Alt+Enter` without the kitty keyboard protocol enabled. `ctrl+enter` is intentionally excluded.
+* the commit popup now persists the in-progress message and cursor position to the per-repo options file (`.git/gitui/`) on `c-q` close, external-editor open, and `Ctrl-C` hard exit, restoring both on next open — even across gitui restarts. Clearing happens on successful commit or when the user empties the text and closes. Only Normal-mode commits are tracked; Reword, Amend, Merge, and Revert keep their own message sources. The new `commit_draft` / `commit_draft_cursor` fields are optional, so older options files without them deserialize to `None` with no migration.
+* the file-history preview (`SyntaxTextComponent`, used by the Files tab and the revision-files popup) now shows bat line numbers via `--style=plain,numbers` instead of `--plain`. A new `line_numbers` flag is threaded through `AsyncSyntaxJob` into `try_bat`; blame keeps its own line column and leaves the flag off.
+
+### Fixed
+* deleted files now render in the delta diff preview instead of showing "No delta output available." `git diff <path>` failed with "ambiguous argument" for deleted tracked files because git parsed the path as a revision; passing `--` to separate paths from revisions (matching the Commit/Commits branches) fixes the WorkDir and Stage paths.
+
 ## [v2.11] - 2026-07-01
 
 ### Added
