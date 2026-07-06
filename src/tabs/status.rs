@@ -79,6 +79,11 @@ pub struct Status {
 	/// (added, deleted) line counts across all staged files,
 	/// shown on the Staged pane's top border.
 	staged_line_stats: (usize, usize),
+	/// (added, deleted) line counts across unstaged tracked files,
+	/// shown on the Unstaged pane's top border. Untracked files are
+	/// excluded so the count only reflects changes to files git
+	/// already knows about.
+	unstaged_line_stats: (usize, usize),
 	git_branch_name: cached::BranchName,
 	queue: Queue,
 	git_action_executed: bool,
@@ -203,6 +208,7 @@ impl Status {
 			git_action_executed: false,
 			git_branch_state: None,
 			staged_line_stats: (0, 0),
+			unstaged_line_stats: (0, 0),
 			git_branch_name: cached::BranchName::new(
 				env.repo.clone(),
 			),
@@ -217,22 +223,49 @@ impl Status {
 		f: &mut ratatui::Frame,
 		chunks: &[ratatui::layout::Rect],
 	) {
-		// Branch info: always on the Unstaged pane's top row.
-		if let Some(branch_name) = self.git_branch_name.last() {
-			let ahead_behind = self
-				.git_branch_state
-				.as_ref()
-				.map_or_else(String::new, |state| {
-					format!(
-						"\u{2191}{} \u{2193}{} ",
-						state.ahead, state.behind,
-					)
-				});
+		// Unstaged pane top row: unstaged line stats followed by
+		// branch info, combined into one right-aligned widget so they
+		// don't overlap. e.g. "(+194 -13) (mymaster ↑3 ↓0)"
+		let (unstage_added, unstage_deleted) =
+			self.unstaged_line_stats;
+		let unstage_stats =
+			if unstage_added > 0 || unstage_deleted > 0 {
+				format!("(+{unstage_added} -{unstage_deleted})")
+			} else {
+				String::new()
+			};
 
-			let w = Paragraph::new(format!(
-				"{ahead_behind}{{{branch_name}}}"
-			))
-			.alignment(Alignment::Right);
+		let branch_part = self.git_branch_name.last().map_or_else(
+			String::new,
+			|branch_name| {
+				let ahead_behind = self
+					.git_branch_state
+					.as_ref()
+					.map_or_else(String::new, |state| {
+						format!(
+							" \u{2191}{} \u{2193}{}",
+							state.ahead, state.behind,
+						)
+					});
+				format!("({branch_name}{ahead_behind})")
+			},
+		);
+
+		let combined = match (
+			unstage_stats.is_empty(),
+			branch_part.is_empty(),
+		) {
+			(false, false) => {
+				format!("{unstage_stats} {branch_part}")
+			}
+			(false, true) => unstage_stats,
+			(true, false) => branch_part,
+			(true, true) => String::new(),
+		};
+
+		if !combined.is_empty() {
+			let w =
+				Paragraph::new(combined).alignment(Alignment::Right);
 
 			let mut rect = chunks[0];
 			rect.x += 1;
@@ -484,6 +517,13 @@ impl Status {
 			Some(self.options.borrow().diff_options()),
 		)
 		.unwrap_or((0, 0));
+
+		self.unstaged_line_stats =
+			sync::diff::get_unstaged_line_stats(
+				&self.repo.borrow(),
+				Some(self.options.borrow().diff_options()),
+			)
+			.unwrap_or((0, 0));
 
 		let workdir_status = self.git_status_workdir.last()?;
 		self.index_wd.set_items(&workdir_status.items)?;
