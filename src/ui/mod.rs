@@ -12,7 +12,9 @@ pub use scrolllist::{draw_list, draw_list_block};
 pub use stateful_paragraph::{
 	ParagraphState, ScrollPos, StatefulParagraph,
 };
-pub use syntax_text::{try_dir_listing, AsyncSyntaxJob, SyntaxText};
+pub use syntax_text::{
+	bat_available, try_dir_listing, AsyncSyntaxJob, SyntaxText,
+};
 
 use crate::keys::{key_match, SharedKeyConfig};
 

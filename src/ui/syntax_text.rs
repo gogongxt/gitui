@@ -497,6 +497,13 @@ fn run_lister(
 	Some(SyntaxText::from_ansi(lines, PathBuf::from(dir)))
 }
 
+/// Whether `bat` (or `batcat`) is on `PATH`. Used to decide whether the
+/// preview can defer to a highlighted `bat` result; when true, the plain
+/// placeholder is suppressed to avoid a plain→highlighted flash.
+pub fn bat_available() -> bool {
+	find_in_path(&["bat", "batcat"]).is_some()
+}
+
 /// Return the first matching binary found on `PATH`, or `None`.
 fn find_in_path(names: &[&str]) -> Option<PathBuf> {
 	let path_var = std::env::var_os("PATH")?;

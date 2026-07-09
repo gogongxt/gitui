@@ -135,8 +135,21 @@ impl SyntaxTextComponent {
 						.with_line_numbers(true),
 					);
 
+					// When `bat` is available the async job will produce a
+					// highlighted result shortly. Show a blank placeholder
+					// instead of the plain content so the pane does not
+					// flash from plain text to the colored bat output.
+					// Without `bat` the syntect fallback still colors the
+					// text, but the plain placeholder gives instant
+					// feedback while that runs.
+					let placeholder = if ui::bat_available() {
+						String::new()
+					} else {
+						content
+					};
+
 					self.current_file =
-						Some((path, Either::Right(content)));
+						Some((path, Either::Right(placeholder)));
 				}
 				Err(e) => {
 					self.current_file = Some((
