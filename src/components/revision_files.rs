@@ -26,7 +26,7 @@ use crossterm::event::Event;
 use filetreelist::{FileTree, FileTreeItem};
 use ratatui::{
 	layout::{Constraint, Direction, Layout, Rect},
-	text::Span,
+	text::{Line, Span},
 	widgets::{Block, Borders},
 	Frame,
 };
@@ -337,6 +337,44 @@ impl RevisionFilesComponent {
 				}
 				self.current_file.clear();
 			}
+		} else if self.tree.selected_item().is_some() {
+			// No selected file but a selected item => the focus is on a
+			// directory. Show a directory listing instead of leaving the
+			// previous file's content on screen.
+			self.load_directory_listing();
+		} else {
+			self.current_file.clear();
+		}
+	}
+
+	/// Show a colored directory listing (`eza`, falling back to `ls`) for
+	/// the currently focused folder. Lists the working tree, not the
+	/// revision's tree.
+	fn load_directory_listing(&mut self) {
+		let Some(dir) = self.selected_item_path() else {
+			self.current_file.clear();
+			return;
+		};
+
+		let Ok(work_dir) = repo_work_dir(&self.repo.borrow()) else {
+			self.current_file.clear();
+			return;
+		};
+
+		match ui::try_dir_listing(Path::new(&work_dir), &dir) {
+			Some(content) => {
+				self.current_file.load_text(dir.clone(), content);
+			}
+			None => self.current_file.load_text(
+				dir,
+				ui::SyntaxText::from_ansi(
+					vec![Line::styled(
+						"could not list directory (no eza/ls, or path not in working tree)".to_string(),
+						self.theme.text(false, false),
+					)],
+					PathBuf::from("directory"),
+				),
+			),
 		}
 	}
 

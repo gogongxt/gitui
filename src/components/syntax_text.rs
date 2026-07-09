@@ -99,6 +99,19 @@ impl SyntaxTextComponent {
 		self.current_file = None;
 	}
 
+	/// Show pre-rendered content directly (e.g. a directory listing from
+	/// `eza`/`ls`). No syntax-highlight job is spawned, and any in-flight
+	/// job is cancelled so a stale result cannot overwrite this content.
+	pub fn load_text(
+		&mut self,
+		path: String,
+		content: ui::SyntaxText,
+	) {
+		self.async_highlighting.cancel();
+		self.syntax_progress = None;
+		self.current_file = Some((path, Either::Left(content)));
+	}
+
 	///
 	pub fn load_file(&mut self, path: String, item: &TreeFile) {
 		let already_loaded = self

@@ -364,7 +364,7 @@ fn try_bat(
 	path: &str,
 	line_numbers: bool,
 ) -> Option<SyntaxText> {
-	let bat = find_in_path(["bat", "batcat"])?;
+	let bat = find_in_path(&["bat", "batcat"])?;
 
 	let style_arg = if line_numbers {
 		"--style=plain,numbers"
@@ -411,8 +411,94 @@ fn try_bat(
 	Some(SyntaxText::from_ansi(lines, PathBuf::from(path)))
 }
 
+/// Produce a colored directory listing for the preview pane. Prefers
+/// `eza` (`exa`, with `-h` for a header row); falls back to `ls`. Color is
+/// forced even though stdout is piped: `eza --color=always`, GNU `ls
+/// --color=always`, BSD `ls -G` with `CLICOLOR_FORCE=1` (macOS). Each
+/// candidate is tried in turn so the right one is used regardless of which
+/// `ls` flavor is installed. Returns `None` on total failure so the caller
+/// can show a message.
+pub fn try_dir_listing(
+	work_dir: &Path,
+	dir: &str,
+) -> Option<SyntaxText> {
+	if let Some(eza) = find_in_path(&["eza", "exa"]) {
+		if let Some(out) = run_lister(
+			&eza,
+			&["--group", "-l", "-h", "--color=always", dir],
+			work_dir,
+			None,
+			dir,
+		) {
+			return Some(out);
+		}
+	}
+
+	if let Some(ls) = find_in_path(&["ls"]) {
+		// GNU ls
+		if let Some(out) = run_lister(
+			&ls,
+			&["-l", "--color=always", dir],
+			work_dir,
+			None,
+			dir,
+		) {
+			return Some(out);
+		}
+		// BSD ls (macOS): -G enables color, CLICOLOR_FORCE forces it
+		// when stdout is not a tty.
+		if let Some(out) = run_lister(
+			&ls,
+			&["-l", "-G", dir],
+			work_dir,
+			Some(("CLICOLOR_FORCE", "1")),
+			dir,
+		) {
+			return Some(out);
+		}
+	}
+
+	None
+}
+
+/// Spawn `bin` with `args` in `work_dir`, optionally setting one env var,
+/// capture stdout, and parse it into a `SyntaxText` via `ansi_to_lines`.
+/// `dir` is used as the identity of the resulting `SyntaxText`. Returns
+/// `None` if the process fails or produces no output.
+fn run_lister(
+	bin: &Path,
+	args: &[&str],
+	work_dir: &Path,
+	env: Option<(&str, &str)>,
+	dir: &str,
+) -> Option<SyntaxText> {
+	let mut cmd = Command::new(bin);
+	cmd.args(args)
+		.current_dir(work_dir)
+		.stdout(Stdio::piped())
+		.stderr(Stdio::null());
+
+	if let Some((key, val)) = env {
+		cmd.env(key, val);
+	}
+
+	let output = cmd.output().ok()?;
+
+	if !output.status.success() || output.stdout.is_empty() {
+		return None;
+	}
+
+	let text = String::from_utf8_lossy(&output.stdout);
+	let (lines, _) = crate::ansi::ansi_to_lines(&text);
+	if lines.is_empty() {
+		return None;
+	}
+
+	Some(SyntaxText::from_ansi(lines, PathBuf::from(dir)))
+}
+
 /// Return the first matching binary found on `PATH`, or `None`.
-fn find_in_path(names: [&str; 2]) -> Option<PathBuf> {
+fn find_in_path(names: &[&str]) -> Option<PathBuf> {
 	let path_var = std::env::var_os("PATH")?;
 	for dir in std::env::split_paths(&path_var) {
 		for name in names {
