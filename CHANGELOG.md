@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.13] - 2026-07-15
+
+### Added
+* the focused Files pane in the commit details panel (and the fullscreen `InspectCommit` popup) now shows a scrollbar when its content overflows, matching the scrollbars already present on the focused `Message` and `Info` panes. `status_tree` renders the scrollbar only while the Files pane holds focus, so the unfocused state stays clean.
+* focusing a folder in the Files tab (and the revision-files popup) now shows a directory listing in the preview instead of leaving the previously-selected file's content on screen. The preview runs `eza --group -l -h --color=always`, falling back to GNU `ls -l --color=always` or BSD `ls -l -G` (with `CLICOLOR_FORCE=1`), in the repo working dir and renders the colored output through the existing ANSI pipeline. Applies to both `FilesTab` and `RevisionFilesPopup` since they share `RevisionFilesComponent`.
+* selecting a file no longer flashes plain text before the highlighted output appears when `bat` is available. `load_file` probes bat availability (a cheap `PATH` scan) and, when bat is present, shows a blank placeholder until the async highlight job produces the colored result — so the pane goes blank→highlighted with no plain-text flash. Without bat, behavior is unchanged (plain placeholder while syntect runs).
+
 ## [v2.12] - 2026-07-06
 
 ### Added
