@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * focusing a folder in the Files tab (and the revision-files popup) now shows a directory listing in the preview instead of leaving the previously-selected file's content on screen. The preview runs `eza --group -l -h --color=always`, falling back to GNU `ls -l --color=always` or BSD `ls -l -G` (with `CLICOLOR_FORCE=1`), in the repo working dir and renders the colored output through the existing ANSI pipeline. Applies to both `FilesTab` and `RevisionFilesPopup` since they share `RevisionFilesComponent`.
 * selecting a file no longer flashes plain text before the highlighted output appears when `bat` is available. `load_file` probes bat availability (a cheap `PATH` scan) and, when bat is present, shows a blank placeholder until the async highlight job produces the colored result — so the pane goes blank→highlighted with no plain-text flash. Without bat, behavior is unchanged (plain placeholder while syntect runs).
 
+### Fixed
+* clippy now passes on current stable Rust, unblocking the CD pipeline. Newer clippy (stable 1.97) flagged two classes of lint across `asyncgit` and the main crate: `useless_borrows_in_formatting` for `&`-prefixed args passed to `format!`/`trace!` (`&remote_name`, `&self.program`, `&repo`, `&e.msg`, `&item_path`) and `manual_clear` for `.truncate(0)` calls. The redundant borrows were dropped, the simple format args inlined (`{remote_name}`, `{repo:?}`, `{item_path}/`), and the `.truncate(0)` calls replaced with `.clear()`, so `make clippy` is clean again.
+
 ## [v2.12] - 2026-07-06
 
 ### Added
