@@ -253,14 +253,22 @@ impl FileRevlogPopup {
 			self.table_state.set(table);
 			res
 		};
-		let revisions = self.get_max_selection();
+		let revisions = self.get_revisions_count();
 
 		self.open_request.as_ref().map_or_else(
 			|| "<no history available>".into(),
 			|open_request| {
+				// `selected` is a 0-based index into the commit list;
+				// show it 1-based so the title reads (1/total) at the
+				// first revision and (total/total) at the last.
+				let position = if revisions == 0 {
+					0
+				} else {
+					selected.saturating_add(1).min(revisions)
+				};
 				strings::file_log_title(
 					&open_request.file_path,
-					selected,
+					position,
 					revisions,
 				)
 			},
@@ -302,6 +310,16 @@ impl FileRevlogPopup {
 		self.git_log.as_ref().map_or(0, |log| {
 			log.count().unwrap_or(0).saturating_sub(1)
 		})
+	}
+
+	/// Total number of revisions in the file history, used for the
+	/// title count. Unlike [`get_max_selection`](Self::get_max_selection)
+	/// this is the actual count, not the 0-based index of the last item.
+	fn get_revisions_count(&self) -> usize {
+		self.git_log
+			.as_ref()
+			.and_then(|log| log.count().ok())
+			.unwrap_or(0)
 	}
 
 	fn move_selection(
