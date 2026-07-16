@@ -24,6 +24,10 @@ struct GlobalOptions {
 	pub status_left_ratio: Option<u16>,
 	pub log_left_ratio: Option<u16>,
 	pub detail_left_ratio: Option<u16>,
+	/// Max recursion depth of the directory tree shown in the Files
+	/// preview when a folder is focused (`eza --tree --level=N`).
+	/// Defaults to 2; clamped to `[1, 10]`.
+	pub preview_tree_depth: Option<u16>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -146,6 +150,19 @@ impl Options {
 			.ok()
 			.and_then(|g| g.detail_left_ratio)
 			.map_or(50, |r| r.clamp(10, 90))
+	}
+
+	/// Recursion depth for the directory tree shown in the Files preview
+	/// when a folder is focused. Defaults to 2; clamped to `[1, 10]` so a
+	/// misconfigured value can't flood the preview pane. The clamp also
+	/// guarantees the `u16` fits in a `u8` without truncation.
+	#[allow(clippy::unused_self)]
+	pub fn preview_tree_depth(&self) -> u8 {
+		let depth = Self::read_global()
+			.ok()
+			.and_then(|g| g.preview_tree_depth)
+			.map_or(2u16, |d| d.clamp(1, 10));
+		u8::try_from(depth).unwrap_or(2)
 	}
 
 	pub fn set_diff_mode(&mut self, mode: DiffMode) {

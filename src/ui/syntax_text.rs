@@ -412,20 +412,31 @@ fn try_bat(
 }
 
 /// Produce a colored directory listing for the preview pane. Prefers
-/// `eza` (`exa`, with `-h` for a header row); falls back to `ls`. Color is
-/// forced even though stdout is piped: `eza --color=always`, GNU `ls
+/// `eza`/`exa`, which can render a recursive tree (names + branches only,
+/// via `--tree --level=N`); falls back to a flat `ls -l` listing when
+/// neither is installed (plain `ls` has no tree mode). Color is forced
+/// even though stdout is piped: `eza --color=always`, GNU `ls
 /// --color=always`, BSD `ls -G` with `CLICOLOR_FORCE=1` (macOS). Each
 /// candidate is tried in turn so the right one is used regardless of which
 /// `ls` flavor is installed. Returns `None` on total failure so the caller
 /// can show a message.
+///
+/// `depth` caps the tree recursion (1 = the folder's immediate children
+/// only). It is ignored by the flat `ls` fallback.
 pub fn try_dir_listing(
 	work_dir: &Path,
 	dir: &str,
+	depth: u8,
 ) -> Option<SyntaxText> {
+	// The repo root arrives as `""` (the `./` prefix is stripped off `.`).
+	// `eza`/`ls` reject an empty path arg, so normalize to `.`.
+	let dir = if dir.is_empty() { "." } else { dir };
+
 	if let Some(eza) = find_in_path(&["eza", "exa"]) {
+		let level = format!("--level={depth}");
 		if let Some(out) = run_lister(
 			&eza,
-			&["--group", "-l", "-h", "--color=always", dir],
+			&["--tree", "--color=always", level.as_str(), dir],
 			work_dir,
 			None,
 			dir,

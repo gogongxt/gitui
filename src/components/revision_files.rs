@@ -361,7 +361,11 @@ impl RevisionFilesComponent {
 			return;
 		};
 
-		match ui::try_dir_listing(Path::new(&work_dir), &dir) {
+		match ui::try_dir_listing(
+			Path::new(&work_dir),
+			&dir,
+			self.options.borrow().preview_tree_depth(),
+		) {
 			Some(content) => {
 				self.current_file.load_text(dir.clone(), content);
 			}
