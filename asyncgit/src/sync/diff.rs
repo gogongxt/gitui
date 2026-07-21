@@ -211,86 +211,103 @@ pub fn get_diff(
 	raw_diff_to_file_diff(&diff, work_dir)
 }
 
-/// total (added, deleted) lines across all staged files
+/// total (added, deleted) lines across all staged files.
+///
+/// This is the *aggregate* counterpart of [`get_diff`] for the whole
+/// index: instead of building a full [`FileDiff`] (with all hunks and
+/// lines) per file just to count `+`/`-` lines, it runs a single
+/// tree→index diff and reads `git2::Diff::stats()`. That avoids the
+/// `O(lines)` hunk/line parsing on the UI thread that the old
+/// per-file fold performed on every status refresh.
 pub fn get_staged_line_stats(
 	repo_path: &RepoPath,
 	options: Option<DiffOptions>,
 ) -> Result<(usize, usize)> {
 	scope_time!("get_staged_line_stats");
 
-	let items = super::status::get_status(
-		repo_path,
-		super::status::StatusType::Stage,
-		None,
-	)?;
-
-	let (added, deleted) = items.iter().fold(
-		(0usize, 0usize),
-		|(added, deleted), item| {
-			let Ok(diff) =
-				get_diff(repo_path, &item.path, true, options)
-			else {
-				return (added, deleted);
-			};
-
-			diff.hunks.iter().flat_map(|hunk| hunk.lines.iter()).fold(
-				(added, deleted),
-				|(a, d), line| match line.line_type {
-					DiffLineType::Add => (a + 1, d),
-					DiffLineType::Delete => (a, d + 1),
-					_ => (a, d),
-				},
-			)
-		},
-	);
-
-	Ok((added, deleted))
+	let repo = repo(repo_path)?;
+	let diff = staged_diff_raw(&repo, options)?;
+	diff_line_stats(&diff)
 }
 
 /// total (added, deleted) lines across unstaged tracked files.
 /// Untracked (new) files are excluded so the count reflects only
 /// changes to files git already knows about.
+///
+/// Like [`get_staged_line_stats`], this runs a single index→workdir
+/// diff (without `include_untracked`, so new files are naturally
+/// excluded) and reads `git2::Diff::stats()`, rather than building a
+/// full [`FileDiff`] per file.
 pub fn get_unstaged_line_stats(
 	repo_path: &RepoPath,
 	options: Option<DiffOptions>,
 ) -> Result<(usize, usize)> {
 	scope_time!("get_unstaged_line_stats");
 
-	let items = super::status::get_status(
-		repo_path,
-		super::status::StatusType::WorkingDir,
-		None,
-	)?;
+	let repo = repo(repo_path)?;
+	let diff = unstaged_diff_raw(&repo, options)?;
+	diff_line_stats(&diff)
+}
 
-	let (added, deleted) = items.iter().fold(
-		(0usize, 0usize),
-		|(added, deleted), item| {
-			// skip untracked files: only count tracked changes
-			if matches!(
-				item.status,
-				super::status::StatusItemType::New
-			) {
-				return (added, deleted);
-			}
+/// Build a single tree→index diff over the whole repo (no pathspec),
+/// matching the `stage = true` branch of [`get_diff_raw`] but applied
+/// to every staged file at once. No `find_similar`, matching the
+/// per-file path's behavior.
+fn staged_diff_raw(
+	repo: &Repository,
+	options: Option<DiffOptions>,
+) -> Result<Diff<'_>> {
+	let mut opt = diff_options(options);
 
-			let Ok(diff) =
-				get_diff(repo_path, &item.path, false, options)
-			else {
-				return (added, deleted);
-			};
+	let diff = if let Ok(id) = get_head_repo(repo) {
+		let parent = repo.find_commit(id.into())?;
+		let tree = parent.tree()?;
+		repo.diff_tree_to_index(
+			Some(&tree),
+			Some(&repo.index()?),
+			Some(&mut opt),
+		)?
+	} else {
+		repo.diff_tree_to_index(
+			None,
+			Some(&repo.index()?),
+			Some(&mut opt),
+		)?
+	};
 
-			diff.hunks.iter().flat_map(|hunk| hunk.lines.iter()).fold(
-				(added, deleted),
-				|(a, d), line| match line.line_type {
-					DiffLineType::Add => (a + 1, d),
-					DiffLineType::Delete => (a, d + 1),
-					_ => (a, d),
-				},
-			)
-		},
-	);
+	Ok(diff)
+}
 
-	Ok((added, deleted))
+/// Build a single index→workdir diff over the whole repo (no
+/// pathspec, no `include_untracked`), matching the `stage = false`
+/// branch of [`get_diff_raw`] minus the untracked-inclusion it sets.
+/// Untracked files are intentionally excluded so the count reflects
+/// only changes to tracked files.
+fn unstaged_diff_raw(
+	repo: &Repository,
+	options: Option<DiffOptions>,
+) -> Result<Diff<'_>> {
+	let mut opt = diff_options(options);
+	Ok(repo.diff_index_to_workdir(None, Some(&mut opt))?)
+}
+
+/// (insertions, deletions) for a whole-repo diff, via `git2`'s native
+/// stats — no hunk/line parsing on our side.
+fn diff_line_stats(diff: &Diff<'_>) -> Result<(usize, usize)> {
+	let stats = diff.stats()?;
+	Ok((stats.insertions(), stats.deletions()))
+}
+
+/// Build `git2::DiffOptions` from the user-facing [`DiffOptions`],
+/// with no pathspec (whole-repo diff).
+fn diff_options(options: Option<DiffOptions>) -> git2::DiffOptions {
+	let mut opt = git2::DiffOptions::new();
+	if let Some(options) = options {
+		opt.context_lines(options.context);
+		opt.ignore_whitespace(options.ignore_whitespace);
+		opt.interhunk_lines(options.interhunk_lines);
+	}
+	opt
 }
 
 /// returns diff of a specific file inside a commit
@@ -746,6 +763,161 @@ mod tests {
 		assert_eq!(
 			get_unstaged_line_stats(repo_path, None).unwrap(),
 			(2, 1)
+		);
+	}
+
+	/// Benchmark + correctness check: the single-bulk-diff
+	/// `get_unstaged_line_stats` must produce the same counts as the
+	/// old per-file fold over `get_diff`, and must be substantially
+	/// faster. Re-implements the old algorithm inline (so we don't
+	/// keep the slow path around in production code) and compares both
+	/// against the same repo.
+	///
+	/// Marked `#[ignore]` because it is a timing benchmark (flaky on
+	/// loaded/CI machines and not a correctness gate); run explicitly
+	/// with `cargo test -p asyncgit bench_unstaged_line_stats -- --ignored`.
+	#[test]
+	#[ignore = "timing benchmark; run with --ignored"]
+	fn bench_unstaged_line_stats() {
+		use std::time::Instant;
+
+		let (_td, repo) = repo_init().unwrap();
+		let root = repo.path().parent().unwrap();
+		let repo_path: &RepoPath =
+			&root.as_os_str().to_str().unwrap().into();
+
+		// Build a repo with many tracked files that each have unstaged
+		// adds+deletes, so the per-file fold has real work to do.
+		const NUM_FILES: usize = 80;
+		const LINES_PER_FILE: usize = 60;
+
+		for i in 0..NUM_FILES {
+			let path = format!("file_{i:03}.txt");
+			// initial committed content
+			let initial: String = (0..LINES_PER_FILE)
+				.map(|l| format!("line {l}\n"))
+				.collect();
+			fs::write(root.join(&path), initial.as_bytes()).unwrap();
+			stage_add_file(repo_path, Path::new(&path)).unwrap();
+		}
+		commit(repo_path, "init").unwrap();
+
+		// now mutate every tracked file: replace ~half the lines
+		for i in 0..NUM_FILES {
+			let path = format!("file_{i:03}.txt");
+			let modified: String = (0..LINES_PER_FILE)
+				.map(|l| {
+					if l % 2 == 0 {
+						format!("changed {l}\n")
+					} else {
+						format!("line {l}\n")
+					}
+				})
+				.collect();
+			fs::write(root.join(&path), modified.as_bytes()).unwrap();
+		}
+
+		// --- old per-file algorithm (re-implemented inline) ---
+		let old_impl = |repo_path: &RepoPath,
+		                options: Option<super::DiffOptions>|
+		 -> (usize, usize) {
+			use super::DiffLineType;
+			let items = super::super::status::get_status(
+				repo_path,
+				super::super::status::StatusType::WorkingDir,
+				None,
+			)
+			.unwrap();
+
+			items.iter().fold(
+				(0usize, 0usize),
+				|(added, deleted), item| {
+					if matches!(
+						item.status,
+						super::super::status::StatusItemType::New
+					) {
+						return (added, deleted);
+					}
+
+					let Ok(diff) = get_diff(
+						repo_path, &item.path, false, options,
+					) else {
+						return (added, deleted);
+					};
+
+					diff.hunks
+						.iter()
+						.flat_map(|hunk| hunk.lines.iter())
+						.fold((added, deleted), |(a, d), line| {
+							match line.line_type {
+								DiffLineType::Add => (a + 1, d),
+								DiffLineType::Delete => (a, d + 1),
+								_ => (a, d),
+							}
+						})
+				},
+			)
+		};
+
+		// Warm up (populate any git2/index caches) so we compare the
+		// steady-state cost, not first-touch disk reads.
+		let _ = old_impl(repo_path, None);
+		let _ = get_unstaged_line_stats(repo_path, None).unwrap();
+
+		// Correctness: both must agree.
+		let expected = old_impl(repo_path, None);
+		let actual =
+			get_unstaged_line_stats(repo_path, None).unwrap();
+		assert_eq!(
+			actual, expected,
+			"optimized line stats diverged from per-file fold"
+		);
+		// sanity: the benchmark actually has non-trivial changes
+		assert!(
+			expected.0 > 0 && expected.1 > 0,
+			"benchmark repo produced no changes: {expected:?}"
+		);
+
+		// Timing: run each a few times and take the median to dampen
+		// scheduling noise.
+		const RUNS: usize = 5;
+		let time_old = {
+			let mut samples: Vec<u128> = (0..RUNS)
+				.map(|_| {
+					let t = Instant::now();
+					let _ = old_impl(repo_path, None);
+					t.elapsed().as_micros()
+				})
+				.collect();
+			samples.sort_unstable();
+			samples[samples.len() / 2]
+		};
+		let time_new = {
+			let mut samples: Vec<u128> = (0..RUNS)
+				.map(|_| {
+					let t = Instant::now();
+					let _ = get_unstaged_line_stats(repo_path, None)
+						.unwrap();
+					t.elapsed().as_micros()
+				})
+				.collect();
+			samples.sort_unstable();
+			samples[samples.len() / 2]
+		};
+
+		eprintln!(
+			"bench_unstaged_line_stats: {NUM_FILES} files, \
+			 {expected:?} — old={time_old}us, new={time_new}us, \
+			 speedup={:.1}x",
+			time_old as f64 / time_new.max(1) as f64
+		);
+
+		// The bulk-stats path should be clearly faster. Use a generous
+		// threshold (2x) so this stays green on slow/loaded machines
+		// while still catching a regression that removes the win.
+		assert!(
+			time_new * 2 < time_old,
+			"optimized path not faster: old={time_old}us new={time_new}us"
 		);
 	}
 
