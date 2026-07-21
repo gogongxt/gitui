@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.14] - 2026-07-21
+
+### Added
+* focusing a folder in the Files tab (and the revision-files popup) now renders the preview as a depth-limited tree instead of the flat `-l -h` long listing, which was too wide for the half-width pane. When `eza` is available the preview runs `eza --tree --color=always --level=N` (names + branch glyphs only); the plain-`ls` fallback stays flat since `ls` has no tree mode. The depth `N` is configurable via the new `preview_tree_depth` option in `config.ron` (default `2`, clamped to `[1, 10]`). An empty directory argument (the repo root arrives as `""` after `./` stripping) is normalized to `.` so focusing the root shows the repo tree instead of erroring out.
+
+### Fixed
+* the file-history popup title now shows a 1-based position. It previously read `Revisions of 'Cargo.toml' (0/310)` on the first revision and `(310/310)` on the last because `get_title()` fed two 0-based indices into `file_log_title()`: the raw selected index and `get_max_selection()` (`count().saturating_sub(1)`, i.e. the last item's index, not the total). A new `get_revisions_count()` returns the real `AsyncLog::count()` total, and the selected position is now `selected + 1` clamped to `[1, total]` (`0` when empty) — so it reads `(1/311)` at the first revision and `(311/311)` at the last. Scroll clamping still uses `get_max_selection()` unchanged.
+
+### Changed
+* the Status tab no longer lags when navigating the file list. `get_staged_line_stats` and `get_unstaged_line_stats` previously folded over every changed file by calling `get_diff()` → `raw_diff_to_file_diff()` per file, building a full `FileDiff` (all hunks + lines, with string allocations) on the UI thread purely to count `+`/`-` lines — and the unstaged pass added in v2.12 doubled that cost on every status refresh. Both now run a single whole-repo diff (no pathspec) and read `git2::Diff::stats()` for insertions/deletions, skipping the hunk/line parsing entirely. `get_staged_line_stats` uses one `diff_tree_to_index`; `get_unstaged_line_stats` uses one `diff_index_to_workdir` without `include_untracked` (so new files stay excluded, matching the old `StatusItemType::New` skip). Diff-option semantics (context / ignore-whitespace / interhunk) are unchanged and, like the old per-file path, `find_similar` is not called. Benchmark (`bench_unstaged_line_stats`): 80 files × 60-line changes, median of 5 runs — old per-file fold ~58 ms, new bulk-stats ~15 ms (~3.9× faster).
+
 ## [v2.13] - 2026-07-15
 
 ### Added
