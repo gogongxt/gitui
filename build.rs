@@ -40,4 +40,7 @@ fn main() {
 	println!("cargo:rustc-env=GITUI_BUILD_NAME={build_name}");
 
 	println!("cargo:rerun-if-changed=build.rs");
+	// git 状态（tag/commit/分支）变化时刷新版本号。
+	// git 在 commit/checkout 时会重写 .git/HEAD，借此触发重跑。
+	println!("cargo:rerun-if-changed=.git/HEAD");
 }
