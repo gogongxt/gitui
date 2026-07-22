@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v2.15] - 2026-07-22
+
+### Added
+* pressing `e` in the diff view now jumps the external editor to the source line under the cursor (e.g. `nvim +42 file.rs`) instead of merely opening the file. The cursor's new-file line number is resolved through the diff data model — `delta_line_positions` in delta mode, and flattened hunk lines in unified mode, with side-by-side `Delete`+`Add` pairing handled — and carried through the `OpenExternalEditor` queue event to the editor launcher, which inserts a `+n` argument between the editor's own args and the path (the vi/vim/emacs/nano convention). Sites without line-number context (file trees, the commit message editor) pass `None` and behave as before, and it falls back to no `+n` when the line has no new-file number (hunk header, pure delete line, or binary diff).
+
+### Fixed
+* the version baked into the binary via `GITUI_BUILD_NAME` no longer sticks at a stale `git describe` value. `build.rs` only declared `rerun-if-changed=build.rs`, so Cargo never re-ran the build script when git state (tag/commit/branch) changed while `build.rs` itself stayed unchanged. It now also declares `rerun-if-changed=.git/HEAD`, so commit/checkout/tag movement — which rewrites `.git/HEAD` — triggers a fresh `git describe`.
+
+### Changed
+* the `(+N -M)` line-stats overlays on the Staged and Unstaged panes are now computed off the UI thread via a new `AsyncLineStats` worker. Previously `get_staged_line_stats` / `get_unstaged_line_stats` ran the single whole-repo bulk diff on the UI thread (the v2.14 optimization made each call ~3.9× faster but still synchronous on every status refresh). `AsyncLineStats` computes both staged and unstaged totals together in one background `rayon` job, keyed by `DiffOptions` plus a generation counter (mirroring `AsyncStatus`), so toggling e.g. `ignore_whitespace` raises a fresh request and the displayed `(+.. -..)` follows — and a stale in-flight result never satisfies a newer request. The UI thread no longer blocks on diff stats.
+
 ## [v2.14] - 2026-07-21
 
 ### Added
