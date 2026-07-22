@@ -87,6 +87,30 @@ fn parse_args(input: &str) -> Vec<String> {
 	args
 }
 
+/// Build the argument vector passed to the editor command, excluding
+/// the editor program itself (`editor_args` are the editor's own
+/// arguments, already parsed). A `+n` line argument is inserted between
+/// the editor's own arguments and the `path` when `line` is `Some(n)`
+/// with `n > 0`, matching the vi/vim/emacs/nano convention
+/// (`editor [editor_args] +n path`). With no line, only `path` is
+/// appended (the historical behavior).
+fn build_editor_args(
+	editor_args: &[String],
+	path: &Path,
+	line: Option<u32>,
+) -> Vec<std::ffi::OsString> {
+	let mut args: Vec<std::ffi::OsString> =
+		editor_args.iter().map(std::ffi::OsString::from).collect();
+
+	if let Some(n) = line.filter(|&n| n > 0) {
+		args.push(std::ffi::OsString::from(format!("+{n}")));
+	}
+
+	args.push(std::ffi::OsString::from(path));
+
+	args
+}
+
 ///
 pub struct ExternalEditorPopup {
 	visible: bool,
@@ -104,10 +128,14 @@ impl ExternalEditorPopup {
 		}
 	}
 
-	/// opens file at given `path` in an available editor
+	/// opens file at given `path` in an available editor. When `line`
+	/// is `Some(n)` (and `n > 0`), the editor is asked to jump to line
+	/// `n` via a `+n` argument placed before the path — the convention
+	/// used by vi/vim/emacs/nano and similar editors.
 	pub fn open_file_in_editor(
 		repo: &RepoPath,
 		path: &Path,
+		line: Option<u32>,
 	) -> Result<()> {
 		let work_dir = repo_work_dir(repo)?;
 
@@ -145,12 +173,8 @@ impl ExternalEditorPopup {
 			)
 		})?;
 
-		let args: Vec<&std::ffi::OsStr> = all_args
-			.iter()
-			.skip(1)
-			.map(std::ffi::OsStr::new)
-			.chain(std::iter::once(path.as_os_str()))
-			.collect();
+		let args: Vec<std::ffi::OsString> =
+			build_editor_args(&all_args[1..], &path, line);
 
 		Command::new(command)
 			.current_dir(work_dir)
@@ -226,5 +250,76 @@ impl Component for ExternalEditorPopup {
 		self.visible = true;
 
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn as_strings(args: &[std::ffi::OsString]) -> Vec<String> {
+		args.iter()
+			.map(|a| a.to_string_lossy().into_owned())
+			.collect()
+	}
+
+	#[test]
+	fn build_args_line_plain_editor() {
+		let editor_args = parse_args("nvim");
+		let args = build_editor_args(
+			&editor_args[1..],
+			Path::new("file.rs"),
+			Some(42),
+		);
+
+		assert_eq!(
+			as_strings(&args),
+			vec!["+42".to_string(), "file.rs".to_string()]
+		);
+	}
+
+	#[test]
+	fn build_args_line_editor_with_args() {
+		// editor configured as `code -w`: its `-w` arg must come
+		// before `+N`, and the path last.
+		let editor_args = parse_args("code -w");
+		let args = build_editor_args(
+			&editor_args[1..],
+			Path::new("file.rs"),
+			Some(42),
+		);
+
+		assert_eq!(
+			as_strings(&args),
+			vec![
+				"-w".to_string(),
+				"+42".to_string(),
+				"file.rs".to_string()
+			]
+		);
+	}
+
+	#[test]
+	fn build_args_no_line() {
+		let editor_args = parse_args("vim");
+		let args = build_editor_args(
+			&editor_args[1..],
+			Path::new("f"),
+			None,
+		);
+
+		assert_eq!(as_strings(&args), vec!["f".to_string()]);
+	}
+
+	#[test]
+	fn build_args_line_zero_treated_as_none() {
+		let editor_args = parse_args("vim");
+		let args = build_editor_args(
+			&editor_args[1..],
+			Path::new("f"),
+			Some(0),
+		);
+
+		assert_eq!(as_strings(&args), vec!["f".to_string()]);
 	}
 }

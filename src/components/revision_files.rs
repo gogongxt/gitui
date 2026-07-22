@@ -635,7 +635,10 @@ impl Component for RevisionFilesComponent {
 					// not altering a file inside a revision here
 					self.queue.push(InternalEvent::TabSwitchStatus);
 					self.queue.push(
-						InternalEvent::OpenExternalEditor(Some(file)),
+						InternalEvent::OpenExternalEditor(
+							Some(file),
+							None,
+						),
 					);
 					return Ok(EventState::Consumed);
 				}

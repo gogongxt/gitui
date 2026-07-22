@@ -951,6 +951,74 @@ impl DiffComponent {
 			.unwrap_or_default()
 	}
 
+	/// Resolve the new-file line number under the cursor, used to jump
+	/// to that line when launching the external editor. Returns `None`
+	/// when the cursor sits on a line without a new-file line number
+	/// (hunk header, pure delete line, binary diff, or no diff).
+	fn current_line_number(&self) -> Option<u32> {
+		let sel = self.selection.get_end();
+
+		if self.is_delta_preview() {
+			return self
+				.delta_line_positions
+				.borrow()
+				.get(sel)
+				.copied()
+				.flatten()
+				.and_then(|p| p.new_lineno);
+		}
+
+		let diff = self.diff.as_ref()?;
+
+		if self.diff_mode == DiffMode::SideBySide {
+			// In side-by-side mode the selection indexes the folded
+			// display lines (a Delete+Add pair counts as one line).
+			// Walk the lines with the same folding rule as
+			// `side_by_side_lines_count`, and for a paired Delete+Add
+			// prefer the Add half's `new_lineno`.
+			let mut display_idx = 0_usize;
+			let mut found: Option<u32> = None;
+			'hunks: for hunk in &diff.hunks {
+				let mut i = 0;
+				while i < hunk.lines.len() {
+					let line = &hunk.lines[i];
+					let new_lineno =
+						if line.line_type == DiffLineType::Delete {
+							// Pair with a following Add line, if any.
+							match hunk.lines.get(i + 1) {
+								Some(next)
+									if next.line_type
+										== DiffLineType::Add =>
+								{
+									i += 1;
+									next.position.new_lineno
+								}
+								_ => line.position.new_lineno,
+							}
+						} else {
+							line.position.new_lineno
+						};
+
+					if display_idx == sel {
+						found = new_lineno;
+						break 'hunks;
+					}
+					display_idx += 1;
+					i += 1;
+				}
+			}
+			return found;
+		}
+
+		// Unified mode: the selection indexes the flattened
+		// hunks[].lines[] directly.
+		diff.hunks
+			.iter()
+			.flat_map(|hunk| hunk.lines.iter())
+			.nth(sel)
+			.and_then(|line| line.position.new_lineno)
+	}
+
 	fn reset_untracked(&self) {
 		self.queue.push(InternalEvent::ConfirmAction(Action::Reset(
 			ResetItem {
@@ -2171,9 +2239,10 @@ impl Component for DiffComponent {
 					&& key_match(e, self.key_config.keys.edit_file)
 				{
 					self.queue.push(
-						InternalEvent::OpenExternalEditor(Some(
-							self.current.path.clone(),
-						)),
+						InternalEvent::OpenExternalEditor(
+							Some(self.current.path.clone()),
+							self.current_line_number(),
+						),
 					);
 					Ok(EventState::Consumed)
 				} else if key_match(
@@ -3130,5 +3199,89 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	/// `current_line_number` should resolve the cursor's new-file line
+	/// number in unified mode, return the changed line's `new_lineno`
+	/// when the cursor sits on it, and `None` when there is no diff.
+	#[test]
+	fn test_current_line_number_unified() {
+		use tempfile::TempDir;
+		let td = TempDir::new().unwrap();
+
+		let run = |args: &[&str]| {
+			let mut cmd = std::process::Command::new("git");
+			cmd.args(args).current_dir(td.path());
+			cmd.output().unwrap();
+		};
+		run(&["init"]);
+		run(&["config", "user.email", "t@t.t"]);
+		run(&["config", "user.name", "t"]);
+
+		// 10 lines; we will change line 4 (new_lineno == 4).
+		let file_path = td.path().join("f.txt");
+		std::fs::write(
+			&file_path,
+			"line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+		)
+		.unwrap();
+		run(&["add", "f.txt"]);
+		run(&["commit", "-m", "init"]);
+
+		std::fs::write(
+			&file_path,
+			"line1\nline2\nline3\nLINE4_CHANGED\nline5\nline6\nline7\nline8\nline9\nline10\n",
+		)
+		.unwrap();
+		run(&["add", "f.txt"]);
+
+		let repo = RepoPath::Path(td.path().to_path_buf());
+		let env = Environment::test_env();
+		let mut diff_comp = DiffComponent::new(&env, false);
+		*diff_comp.repo.borrow_mut() = repo.clone();
+		// default mode is Unified
+		assert!(!diff_comp.is_delta_preview());
+		diff_comp.current_size.set((120, 40));
+
+		let diff = make_filediff(&repo, "f.txt", true);
+		assert!(!diff.hunks.is_empty());
+
+		// The changed line (+ LINE4_CHANGED) is the only Add line;
+		// find its display index before `update` takes ownership.
+		let target = diff
+			.hunks
+			.iter()
+			.flat_map(|h| h.lines.iter())
+			.enumerate()
+			.find(|(_, l)| l.line_type == DiffLineType::Add)
+			.map(|(i, _)| i)
+			.expect("an Add line exists");
+
+		diff_comp.update(
+			"f.txt".to_string(),
+			true,
+			diff,
+			DiffType::WorkDir,
+		);
+
+		for _ in 0..target {
+			diff_comp.move_selection(ScrollType::Down);
+		}
+
+		assert_eq!(
+			diff_comp.current_line_number(),
+			Some(4),
+			"cursor on changed line should resolve to its new_lineno"
+		);
+
+		// Move to the hunk header (index 0) — new_lineno is None there.
+		for _ in 0..target {
+			diff_comp.move_selection(ScrollType::Up);
+		}
+		assert_eq!(
+			diff_comp.current_line_number(),
+			None,
+			"hunk header has no new_lineno"
+		);
 	}
 }
