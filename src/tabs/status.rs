@@ -20,8 +20,8 @@ use asyncgit::{
 		self, status::StatusType, RepoPath, RepoPathRef, RepoState,
 	},
 	sync::{BranchCompare, CommitId},
-	AsyncDiff, AsyncGitNotification, AsyncStatus, DiffParams,
-	DiffType, StatusItem, StatusParams,
+	AsyncDiff, AsyncGitNotification, AsyncLineStats, AsyncStatus,
+	DiffParams, DiffType, LineStats, StatusItem, StatusParams,
 };
 use crossterm::event::Event;
 use itertools::Itertools;
@@ -75,6 +75,9 @@ pub struct Status {
 	git_state: RepoState,
 	git_status_workdir: AsyncStatus,
 	git_status_stage: AsyncStatus,
+	/// background `(+.. -..)` line-count computation; never blocks
+	/// the UI thread. See [`AsyncLineStats`].
+	git_line_stats: AsyncLineStats,
 	git_branch_state: Option<BranchCompare>,
 	/// (added, deleted) line counts across all staged files,
 	/// shown on the Staged pane's top border.
@@ -204,6 +207,10 @@ impl Status {
 			git_status_stage: AsyncStatus::new(
 				repo_clone,
 				env.sender_git.clone(),
+			),
+			git_line_stats: AsyncLineStats::new(
+				env.repo.borrow().clone(),
+				&env.sender_git,
 			),
 			git_action_executed: false,
 			git_branch_state: None,
@@ -450,6 +457,13 @@ impl Status {
 				config,
 			))?;
 
+			// Kick off a background line-stats recompute (no-op if the
+			// options + generation are unchanged). Result lands via
+			// the `LineStats` notification — never blocks UI thread.
+			let _ = self
+				.git_line_stats
+				.fetch(self.options.borrow().diff_options());
+
 			self.git_state = sync::repo_state(&self.repo.borrow())
 				.unwrap_or(RepoState::Clean);
 
@@ -464,6 +478,7 @@ impl Status {
 		self.git_diff.is_pending()
 			|| self.git_status_stage.is_pending()
 			|| self.git_status_workdir.is_pending()
+			|| self.git_line_stats.is_pending()
 	}
 
 	fn check_remotes(&mut self) {
@@ -492,6 +507,9 @@ impl Status {
 			AsyncGitNotification::Diff => self.update_diff()?,
 			AsyncGitNotification::Delta => self.diff.apply_delta(),
 			AsyncGitNotification::Status => self.update_status()?,
+			AsyncGitNotification::LineStats => {
+				self.update_line_stats();
+			}
 			AsyncGitNotification::Branches => self.check_remotes(),
 			AsyncGitNotification::Push
 			| AsyncGitNotification::Pull
@@ -512,18 +530,9 @@ impl Status {
 		let stage_status = self.git_status_stage.last()?;
 		self.index.set_items(&stage_status.items)?;
 
-		self.staged_line_stats = sync::diff::get_staged_line_stats(
-			&self.repo.borrow(),
-			Some(self.options.borrow().diff_options()),
-		)
-		.unwrap_or((0, 0));
-
-		self.unstaged_line_stats =
-			sync::diff::get_unstaged_line_stats(
-				&self.repo.borrow(),
-				Some(self.options.borrow().diff_options()),
-			)
-			.unwrap_or((0, 0));
+		// line stats are computed off the UI thread by
+		// `git_line_stats`; they arrive via the `LineStats`
+		// notification -> `update_line_stats()`, not here.
 
 		let workdir_status = self.git_status_workdir.last()?;
 		self.index_wd.set_items(&workdir_status.items)?;
@@ -546,6 +555,18 @@ impl Status {
 		}
 
 		Ok(())
+	}
+
+	/// Pull the latest background-computed `(+.. -..)` counts into the
+	/// render fields. Called on the `LineStats` notification — never
+	/// computes itself, so it is cheap enough for the UI thread.
+	fn update_line_stats(&mut self) {
+		if let Some(LineStats { staged, unstaged }) =
+			self.git_line_stats.last().ok().flatten()
+		{
+			self.staged_line_stats = staged;
+			self.unstaged_line_stats = unstaged;
+		}
 	}
 
 	///

@@ -52,6 +52,7 @@ mod diff;
 mod error;
 mod fetch_job;
 mod filter_commits;
+mod linestats;
 mod progress;
 mod pull;
 mod push;
@@ -73,6 +74,7 @@ pub use crate::{
 	error::{Error, Result},
 	fetch_job::AsyncFetchJob,
 	filter_commits::{AsyncCommitFilterJob, CommitFilterResult},
+	linestats::{AsyncLineStats, LineStats},
 	progress::ProgressPercent,
 	pull::{AsyncPull, FetchRequest},
 	push::{AsyncPush, PushRequest},
@@ -134,6 +136,8 @@ pub enum AsyncGitNotification {
 	Reflog,
 	///
 	Delta,
+	/// staged/unstaged `(+.. -..)` line-count stats finished
+	LineStats,
 }
 
 /// helper function to calculate the hash of an arbitrary type that implements the `Hash` trait
